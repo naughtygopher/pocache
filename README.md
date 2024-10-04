@@ -17,7 +17,7 @@ add key here           get key                  key expires
 
 Consider a cache expiry of 10 minutes, and a threshold window of 1 minute. In the timeline above, we add a new key to the cache at `0min`, and `10mins` is when the key is set to expire. If you try to **Get** a key between `9mins` & `10mins`, then it is within the _threshold_ window. At this point, it would initiate a cache update _preemptively_, assuming this key would be accessed again. Thereby maintaining the freshness of the data in the cache.
 
-In a highly concurrent environment, preemptive and controlled updates help significantly reduce the number of I/O calls to the respective database, without compromising the freshness of cache. If not for a preemptive update, the application would have called the underlying database N times where N is the number of concurrent requests (e.g. in a web application), untill the cache is updated locally. This would also increase the pressure on the application to handle the concurrent reads and writes for the same key within the app cache.
+In a highly concurrent environment, preemptive and controlled updates help significantly reduce the number of I/O calls to the respective database, without compromising the freshness of cache. If not for a preemptive update, the application would have called the underlying database N times where N is the number of concurrent requests (e.g. in a web application), until the cache is updated locally. This would also increase the pressure on the application to handle the concurrent reads and writes for the same key within the app cache.
 
 ## The gopher
 
