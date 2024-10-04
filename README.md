@@ -10,7 +10,7 @@ A debounced update is initiated when a key is fetched within its threshold windo
 ```
 |_____________________ _____threshold____ ________|
 0min                   9mins              10mins
-set key here              fetch key       key expires
+add key here           get key            key expires
 ```
 
 Consider a cache expiry of 10 minutes, and a threshold window of 1 minute. In the timeline above, we set the cache at `0min`, and `10mins` is when the cache is set to expire. If you try to **Get** a key between `9mins` & `10mins`, then it is within the _threshold_ window. At this point, it would initiate a cache update preemptively, assuming this key would be accessed again. Thereby maintaining the freshness of the data in the cache.
