@@ -1,6 +1,6 @@
 <p align="center"><img src="https://github.com/user-attachments/assets/1038467d-6058-4227-8a59-cf29b847fb2b" alt="incache gopher" width="256px"/></p>
 
-[![](https://github.com/naughtygopher/incache/actions/workflows/go.yml/badge.svg)](https://github.com/naughtygopher/incache/actions)
+[![](https://github.com/naughtygopher/incache/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/naughtygopher/incache/actions)
 [![](https://godoc.org/github.com/nathany/looper?status.svg)](http://godoc.org/github.com/naughtygopher/incache)
 
 # In _app_ Cache
