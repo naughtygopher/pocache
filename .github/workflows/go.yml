@@ -26,12 +26,21 @@ jobs:
             - name: Test
               run: go test -v ./...
 
-            - name: Go coverage report
-              uses: ncruces/go-coverage-report@v0
+            - name: Check out code
+              uses: actions/checkout@v2
+            - name: Install dependencies
+              run: |
+                  go mod download
+            - name: Run Unit tests
+              run: |
+                  go test -race -covermode atomic -coverprofile=covprofile ./...
+            - name: Install goveralls
+              run: go install github.com/mattn/goveralls@latest
+            # - name: Send coverage
+            #   env:
+            #         COVERALLS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            #   run: goveralls -coverprofile=covprofile -service=github
+            - name: Send coverage
+              uses: shogo82148/actions-goveralls@v1
               with:
-                  report: true
-                  chart: true
-              #   if: |
-              #       github.base_ref == 'main' &&
-              #       github.event_name == 'push'
-              continue-on-error: true
+                  path-to-profile: covprofile
