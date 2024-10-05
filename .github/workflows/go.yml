@@ -31,7 +31,6 @@ jobs:
               with:
                   report: true
                   chart: true
-                  amend: true
               #   if: |
               #       github.base_ref == 'main' &&
               #       github.event_name == 'push'
