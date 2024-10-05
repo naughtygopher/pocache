@@ -5,7 +5,7 @@
 
 # Pocache
 
-Pocache is a lightweight in-app caching solution. It introduces preemptive cache updates, optimizing performance in concurrent environments by reducing redundant database calls while maintaining fresh data. It uses [Hashicorp's Go LRU package](https://github.com/hashicorp/golang-lru/tree/v2) as the default storage.
+Pocache (`poh-cash (/poʊ kæʃ/)`) is a lightweight in-app caching solution. It introduces preemptive cache updates, optimizing performance in concurrent environments by reducing redundant database calls while maintaining fresh data. It uses [Hashicorp's Go LRU package](https://github.com/hashicorp/golang-lru/tree/v2) as the default storage.
 
 ## Key Features
 
