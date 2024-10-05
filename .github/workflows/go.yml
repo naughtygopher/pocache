@@ -27,7 +27,13 @@ jobs:
               run: |
                   go install github.com/mattn/goveralls@latest
                   go test -race -covermode atomic -coverprofile=covprofile ./...
+
             - name: Send coverage
               uses: shogo82148/actions-goveralls@v1
               with:
                   path-to-profile: covprofile
+
+            - name: golangci-lint
+              uses: golangci/golangci-lint-action@v6
+              with:
+                  version: v1.60
