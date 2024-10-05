@@ -1,4 +1,4 @@
-module github.com/naughtygopher/incache
+module github.com/naughtygopher/pochache
 
 go 1.23
 
