@@ -1,5 +1,5 @@
-// Package pochache implements an in-memory, LRU cache, with preemptive update feature.
-package pochache
+// Package pocache implements an in-memory, LRU cache, with preemptive update feature.
+package pocache
 
 import (
 	"context"
