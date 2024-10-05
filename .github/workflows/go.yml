@@ -23,7 +23,7 @@ jobs:
             - name: Build
               run: go build -v ./...
 
-            - name: Run Unit tests
+            - name: Tests
               run: |
                   go install github.com/mattn/goveralls@latest
                   go test -race -covermode atomic -coverprofile=covprofile ./...
@@ -31,3 +31,4 @@ jobs:
               uses: shogo82148/actions-goveralls@v1
               with:
                   path-to-profile: covprofile
+              if: github.event.pull_request.merged
