@@ -3,7 +3,7 @@
 [![](https://github.com/naughtygopher/pocache/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/naughtygopher/pocache/actions)
 [![Go Reference](https://pkg.go.dev/badge/github.com/naughtygopher/pocache.svg)](https://pkg.go.dev/github.com/naughtygopher/pocache)
 [![Go Report Card](https://goreportcard.com/badge/github.com/naughtygopher/pocache)](https://goreportcard.com/report/github.com/naughtygopher/pocache)
-[![Go Coverage](https://github.com/naughtygopher/REPO/wiki/coverage.svg)](https://raw.githack.com/wiki/naughtygopher/pocache/coverage.html)
+[![Coverage Status](https://coveralls.io/repos/github/naughtygopher/pocache/badge.svg?branch=main)](https://coveralls.io/github/naughtygopher/pocache?branch=main)
 
 # Pocache
 
