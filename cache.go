@@ -1,5 +1,5 @@
-// Package cache implements an in-memory, LRU cache, with preemptive update feature.
-package incache
+// Package pochache implements an in-memory, LRU cache, with preemptive update feature.
+package pochache
 
 import (
 	"context"
@@ -15,6 +15,12 @@ import (
 var (
 	ErrValidation = errors.New("invalid")
 )
+
+type store[K comparable, T any] interface {
+	Add(key K, value *Payload[T]) (evicted bool)
+	Get(key K) (value *Payload[T], found bool)
+	Remove(key K) (present bool)
+}
 
 type ErrOnUpdate func(err error)
 type Config[K comparable, T any] struct {
@@ -38,6 +44,8 @@ type Config[K comparable, T any] struct {
 	// UpdaterTimeout is the context time out for when the updater function is called
 	UpdaterTimeout time.Duration
 	Updater        updater[K, T]
+	Store          store[K, T]
+
 	// ErrWatcher is called when there's any error when trying to update cache
 	ErrWatcher ErrOnUpdate
 }
@@ -113,7 +121,7 @@ type Value[T any] struct {
 type Cache[K comparable, T any] struct {
 	isDisabled        bool
 	disableServeStale bool
-	store             *lru.Cache[K, *Payload[T]]
+	store             store[K, T]
 	cacheAge          time.Duration
 
 	deleteQ chan<- K
@@ -251,21 +259,31 @@ func (ch *Cache[K, T]) BulkAdd(tuples []Tuple[K, T]) (evicted []bool) {
 	return evicted
 }
 
+func DefaultStore[K comparable, T any](lrusize int) (store[K, T], error) {
+	lCache, err := lru.New[K, *Payload[T]](int(lrusize))
+	if err != nil {
+		return nil, fmt.Errorf("failed initializing LRU cache: %w", err)
+	}
+	return lCache, nil
+}
+
 func New[K comparable, T any](cfg Config[K, T]) (*Cache[K, T], error) {
 	err := cfg.SanitizeValidate()
 	if err != nil {
 		return nil, err
 	}
 
-	lCache, err := lru.New[K, *Payload[T]](int(cfg.LRUCacheSize))
-	if err != nil {
-		return nil, errors.New("failed initializing LRU cache")
+	cstore := cfg.Store
+	if cstore == nil {
+		cstore, err = DefaultStore[K, T](int(cfg.LRUCacheSize))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	deleteQ := make(chan K, cfg.QLength)
-
 	ch := &Cache[K, T]{
-		store:             lCache,
+		store:             cstore,
 		deleteQ:           deleteQ,
 		cacheAge:          cfg.CacheAge.Abs(),
 		isDisabled:        cfg.DisableCache,
