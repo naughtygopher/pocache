@@ -7,7 +7,7 @@
 
 # Pocache
 
-Pocache (`poh-cash (/poʊ kæʃ/)`) is a lightweight in-app caching solution. It introduces preemptive cache updates, optimizing performance in concurrent environments by reducing redundant database calls while maintaining fresh data. It uses [Hashicorp's Go LRU package](https://github.com/hashicorp/golang-lru/tree/v2) as the default storage.
+Pocache (`poh-cash (/poʊ kæʃ/)`), **P**reemptive **O**ptimistic Cache, is a lightweight in-app caching package. It introduces preemptive cache updates, optimizing performance in concurrent environments by reducing redundant database calls while maintaining fresh data. It uses [Hashicorp's Go LRU package](https://github.com/hashicorp/golang-lru/tree/v2) as the default storage.
 
 ## Key Features
 
@@ -29,13 +29,13 @@ Example:
 Add key here            Get key within window        Key expires
 ```
 
-When a key is fetched between 9-10 minutes (within the threshold window), Pocache initiates an update for that key. This ensures fresh data availability, anticipating future usage (_optimistic_).
+When a key is fetched between 9-10 minutes (within the threshold window), Pocache initiates an update for that key (_preemptive_). This ensures fresh data availability, anticipating future usage (_optimistic_).
 
 ## Why Use Preemptive Updates?
 
 In highly concurrent environments (e.g., web servers), multiple requests might try to access the same cache entry simultaneously. Without preemptive updates, the system would query the underlying database multiple times until the cache is refreshed.
 
-Additionally by debouncing these requests, Pocache ensures only a single update is triggered, reducing load on both the underlying storage and the application.
+Additionally by debouncing these requests, Pocache ensures only a single update is triggered, reducing load on both the underlying storage and the application itself.
 
 ## The gopher
 
