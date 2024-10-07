@@ -7,7 +7,7 @@
 
 # Pocache
 
-Pocache (`poh-cash (/poʊ kæʃ/)`), **P**reemptive **O**ptimistic Cache, is a lightweight in-app caching package. It introduces preemptive cache updates, optimizing performance in concurrent environments by reducing redundant database calls while maintaining fresh data. It uses [Hashicorp's Go LRU package](https://github.com/hashicorp/golang-lru/tree/v2) as the default storage.
+Pocache (`poh-cash (/poʊ kæʃ/)`), **P**reemptive **O**ptimistic Cache, is a lightweight in-app caching package. It introduces preemptive cache updates, optimizing performance in concurrent environments by reducing redundant database calls while maintaining fresh data. It uses [Hashicorp's Go LRU package](https://github.com/hashicorp/golang-lru) as the default storage.
 
 ## Key Features
 
