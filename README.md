@@ -32,7 +32,7 @@ Add key here            Get key within window        Key expires
 
 When a key is fetched between 9-10 minutes (within the threshold window), Pocache initiates an update for that key (_preemptive_). This ensures fresh data availability, anticipating future usage (_optimistic_).
 
-## Why Use Preemptive Updates?
+## Why use preemptive updates?
 
 In highly concurrent environments (e.g., web servers), multiple requests might try to access the same cache entry simultaneously. Without preemptive updates, the system would query the underlying database multiple times until the cache is refreshed.
 

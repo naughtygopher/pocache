@@ -126,14 +126,15 @@ type Cache[K comparable, T any] struct {
 
 	deleteQ chan<- K
 
-	// following configurations are used only when threshold update is enabled
+	// following configurations are used only when an updater & threshold update are enabled
 	// threshold is the duration within which if the cache is about to expire, it is eligible to be updated
-	threshold        time.Duration
-	updateQ          chan<- K
-	updater          updater[K, T]
-	errWatcher       ErrOnUpdate
-	updaterTimeout   time.Duration
+	threshold      time.Duration
+	updateQ        chan<- K
+	updater        updater[K, T]
+	updaterTimeout time.Duration
+	// updateInProgress is used to handle update debounce
 	updateInProgress *sync.Map
+	errWatcher       ErrOnUpdate
 }
 
 // initUpdater initializes all configuration required for threshold based update
@@ -143,12 +144,14 @@ func (ch *Cache[K, T]) initUpdater(cfg *Config[K, T]) {
 	}
 
 	ch.threshold = cfg.Threshold.Abs()
-	ch.updaterTimeout = cfg.UpdaterTimeout
-	ch.updateInProgress = &sync.Map{}
-	ch.updater = cfg.Updater
-
 	updateQ := make(chan K, cfg.QLength)
 	ch.updateQ = updateQ
+
+	ch.updater = cfg.Updater
+	ch.updaterTimeout = cfg.UpdaterTimeout
+	ch.updateInProgress = new(sync.Map)
+	ch.errWatcher = cfg.ErrWatcher
+
 	go ch.updateListener(updateQ)
 }
 
@@ -156,6 +159,7 @@ func (ch *Cache[K, T]) errCallback(err error) {
 	if err == nil || ch.errWatcher == nil {
 		return
 	}
+
 	ch.errWatcher(err)
 }
 
@@ -195,13 +199,13 @@ func (ch *Cache[K, T]) update(key K) {
 	defer cancel()
 
 	value, err := ch.updater(ctx, key)
+	ch.updateInProgress.Delete(key)
 	if err != nil {
 		ch.errCallback(err)
 		return
 	}
 
 	ch.Add(key, value)
-	ch.updateInProgress.Delete(key)
 }
 
 func (ch *Cache[K, T]) Get(key K) Value[T] {
@@ -283,12 +287,11 @@ func New[K comparable, T any](cfg Config[K, T]) (*Cache[K, T], error) {
 
 	deleteQ := make(chan K, cfg.QLength)
 	ch := &Cache[K, T]{
-		store:             cstore,
-		deleteQ:           deleteQ,
-		cacheAge:          cfg.CacheAge.Abs(),
 		isDisabled:        cfg.DisableCache,
 		disableServeStale: !cfg.ServeStale,
-		errWatcher:        cfg.ErrWatcher,
+		store:             cstore,
+		cacheAge:          cfg.CacheAge.Abs(),
+		deleteQ:           deleteQ,
 	}
 
 	ch.initUpdater(&cfg)

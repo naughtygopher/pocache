@@ -11,14 +11,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCache(t *testing.T) {
+func TestCache(tt *testing.T) {
 	var (
 		prefix   = "prefix"
 		value    = "value"
-		requirer = require.New(t)
+		requirer = require.New(tt)
+		asserter = require.New(tt)
 	)
 
-	t.Run("found", func(t *testing.T) {
+	tt.Run("found", func(t *testing.T) {
 		cache, err := New(Config[string, any]{
 			LRUCacheSize: 10000,
 			CacheAge:     time.Minute,
@@ -28,11 +29,11 @@ func TestCache(t *testing.T) {
 
 		cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
 		v := cache.Get(prefix)
-		requirer.True(v.Found)
-		requirer.Equal(v.V, value)
+		asserter.True(v.Found)
+		asserter.Equal(v.V, value)
 	})
 
-	t.Run("not found", func(t *testing.T) {
+	tt.Run("not found", func(t *testing.T) {
 		cache, err := New(Config[string, any]{
 			LRUCacheSize: 10000,
 			CacheAge:     time.Minute,
@@ -42,11 +43,11 @@ func TestCache(t *testing.T) {
 
 		cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
 		v := cache.Get(prefix + "_does_not_exist")
-		requirer.False(v.Found)
-		requirer.Equal(v.V, nil)
+		asserter.False(v.Found)
+		asserter.Equal(v.V, nil)
 	})
 
-	t.Run("cache age expired", func(t *testing.T) {
+	tt.Run("cache age expired", func(t *testing.T) {
 		cache, err := New(Config[string, any]{
 			LRUCacheSize: 1,
 			CacheAge:     time.Nanosecond,
@@ -57,11 +58,11 @@ func TestCache(t *testing.T) {
 		cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
 		time.Sleep(time.Millisecond)
 		v := cache.Get(prefix)
-		requirer.False(v.Found)
-		requirer.Equal(v.V, nil)
+		asserter.False(v.Found)
+		asserter.Equal(v.V, nil)
 	})
 
-	t.Run("update cache", func(t *testing.T) {
+	tt.Run("update cache", func(t *testing.T) {
 		cache, err := New(Config[string, any]{
 			LRUCacheSize: 10000,
 			CacheAge:     time.Minute,
@@ -71,17 +72,17 @@ func TestCache(t *testing.T) {
 
 		cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
 		v := cache.Get(prefix)
-		requirer.True(v.Found)
-		requirer.Equal(v.V, value)
+		asserter.True(v.Found)
+		asserter.Equal(v.V, value)
 
 		value = "new_value"
 		cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
 		v = cache.Get(prefix)
-		requirer.True(v.Found)
-		requirer.Equal(v.V, value)
+		asserter.True(v.Found)
+		asserter.Equal(v.V, value)
 	})
 
-	t.Run("multiple Add/Get to check if channel blocks", func(t *testing.T) { //nolint:govet
+	tt.Run("multiple Add/Get to check if channel blocks", func(t *testing.T) { //nolint:govet
 		// limit should be greater than the channel buffer for updateQ & deleteQ
 		limit := 200
 		cache, err := New(Config[string, any]{
@@ -101,16 +102,125 @@ func TestCache(t *testing.T) {
 			prefix := fmt.Sprintf("%s_%d", prefix, i)
 			value := fmt.Sprintf("%s_%d", value, i)
 			v := cache.Get(prefix)
-			requirer.True(v.Found)
-			requirer.Equal(v.V, value)
+			asserter.True(v.Found)
+			asserter.Equal(v.V, value)
 		}
 	})
+
+	tt.Run("serve stale", func(t *testing.T) {
+		cache, err := New(Config[string, any]{
+			LRUCacheSize: 10000,
+			CacheAge:     time.Second * 2,
+			DisableCache: false,
+			ServeStale:   true,
+		})
+		requirer.NoError(err)
+
+		cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
+		// wait for cache to expire
+		time.Sleep(time.Second * 3)
+
+		v := cache.Get(prefix)
+		asserter.True(v.Found)
+		asserter.Equal(v.V, value)
+	})
+
+	tt.Run("debounce", func(t *testing.T) {
+		cache, err := New(Config[string, any]{
+			LRUCacheSize: 10000,
+			CacheAge:     time.Minute,
+			Threshold:    time.Second * 59,
+			DisableCache: false,
+			Updater: func(ctx context.Context, key string) (any, error) {
+				// intentional delay in updater to retain debounce key
+				// in the map long enough to be tested
+				time.Sleep(time.Second * 3)
+				return key, nil
+			},
+		})
+		requirer.NoError(err)
+
+		_ = cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
+		// wait for threshold window
+		time.Sleep(time.Second)
+		// trigger auto update within threshold window
+		_ = cache.Get(prefix)
+
+		// re-trigger auto update within threshold window
+		_ = cache.Get(prefix)
+		// check if key added to debounce checker map
+		_, found := cache.updateInProgress.Load(prefix)
+		asserter.True(found)
+	})
+
+	tt.Run("err watcher", func(t *testing.T) {
+		forcedErr := fmt.Errorf("forced error")
+		ranUpdater := atomic.Bool{}
+		ranErrWatcher := atomic.Bool{}
+
+		cache, err := New(Config[string, any]{
+			LRUCacheSize: 10000,
+			CacheAge:     time.Minute,
+			Threshold:    time.Second * 59,
+			DisableCache: false,
+			Updater: func(ctx context.Context, key string) (any, error) {
+				ranUpdater.Store(true)
+				return nil, forcedErr
+			},
+			ErrWatcher: func(watcherErr error) {
+				ranErrWatcher.Store(true)
+				asserter.ErrorIs(watcherErr, forcedErr)
+			},
+		})
+		requirer.NoError(err)
+
+		_ = cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
+		// wait for threshold window
+		time.Sleep(time.Second)
+		// trigger auto update within threshold window
+		_ = cache.Get(prefix)
+
+		// wait for the updater callback to be executed
+		time.Sleep(time.Second * 2)
+		asserter.True(ranUpdater.Load())
+		asserter.True(ranErrWatcher.Load())
+	})
+
+	tt.Run("no err watcher", func(t *testing.T) {
+		forcedErr := fmt.Errorf("forced error")
+		ranUpdater := atomic.Bool{}
+		ranErrWatcher := atomic.Bool{}
+
+		cache, err := New(Config[string, any]{
+			LRUCacheSize: 10000,
+			CacheAge:     time.Minute,
+			Threshold:    time.Second * 59,
+			DisableCache: false,
+			Updater: func(ctx context.Context, key string) (any, error) {
+				ranUpdater.Store(true)
+				return nil, forcedErr
+			},
+		})
+		requirer.NoError(err)
+
+		_ = cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
+		// wait for threshold window
+		time.Sleep(time.Second)
+		// trigger auto update within threshold window
+		_ = cache.Get(prefix)
+
+		// wait for the updater callback to be executed
+		time.Sleep(time.Second * 2)
+		asserter.True(ranUpdater.Load())
+		asserter.False(ranErrWatcher.Load())
+	})
+
 }
 
-func TestThresholdUpdater(t *testing.T) {
+func TestThresholdUpdater(tt *testing.T) {
 	var (
-		requirer  = require.New(t)
-		asserter  = require.New(t)
+		requirer  = require.New(tt)
+		asserter  = require.New(tt)
 		cacheAge  = time.Second
 		threshold = time.Millisecond * 500
 	)
@@ -126,7 +236,7 @@ func TestThresholdUpdater(t *testing.T) {
 		},
 	})
 	requirer.NoError(err)
-	t.Run("before threshold", func(t *testing.T) {
+	tt.Run("before threshold", func(t *testing.T) {
 		ranUpdater.Store(false)
 		key := "key_1"
 		ch.Add(key, key)
@@ -138,7 +248,7 @@ func TestThresholdUpdater(t *testing.T) {
 		asserter.EqualValues(key, v.V)
 	})
 
-	t.Run("during threshold", func(t *testing.T) {
+	tt.Run("during threshold", func(t *testing.T) {
 		ranUpdater.Store(false)
 		key := "key_2"
 
@@ -152,7 +262,7 @@ func TestThresholdUpdater(t *testing.T) {
 		asserter.True(ranUpdater.Load())
 	})
 
-	t.Run("after threshold (cache expired)", func(t *testing.T) {
+	tt.Run("after threshold (cache expired)", func(t *testing.T) {
 		ranUpdater.Store(false)
 		key := "key_3"
 
@@ -198,4 +308,16 @@ func TestValidate(tt *testing.T) {
 		err := cfg.Validate()
 		requirer.Nil(err)
 	})
+}
+
+func TestSanitize(tt *testing.T) {
+	asserter := assert.New(tt)
+
+	cfg := Config[string, string]{}
+	cfg.Sanitize()
+	asserter.Equal(cfg.LRUCacheSize, uint(1000))
+	asserter.Equal(cfg.QLength, uint(1000))
+	asserter.Equal(cfg.CacheAge, time.Minute)
+	asserter.Equal(cfg.Threshold, time.Second*59)
+	asserter.Equal(cfg.UpdaterTimeout, time.Second)
 }
