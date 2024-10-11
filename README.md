@@ -7,14 +7,15 @@
 
 # Pocache
 
-Pocache (`poh-cash (/poʊ kæʃ/)`), **P**reemptive **O**ptimistic Cache, is a lightweight in-app caching package. It introduces preemptive cache updates, optimizing performance in concurrent environments by reducing redundant database calls while maintaining fresh data. It uses [Hashicorp's Go LRU package](https://github.com/hashicorp/golang-lru) as the default storage.
+Pocache (`poh-cash (/poʊ kæʃ/)`), **P**reemptive **o**ptimistic cache, is a lightweight in-app caching package. It introduces preemptive cache updates, optimizing performance in concurrent environments by reducing redundant database calls while maintaining fresh data. It uses [Hashicorp's Go LRU package](https://github.com/hashicorp/golang-lru) as the default storage.
 
 ## Key Features
 
-1. **Preemptive Cache Updates:** Automatically updates cache entries nearing expiration.
+1. **Preemptive Cache Updates:** Automatically updates cache entries _nearing_ expiration.
 2. **Threshold Window:** Configurable time window before cache expiration to trigger updates.
 3. **Serve stale**: Opt-in configuration to serve even expired cache and do a background refresh.
 4. **Debounced Updates:** Prevents excessive I/O calls by debouncing concurrent requests for the same key.
+5. **Custom store**: customizable underlying storage to extend in-app cache to external database
 
 ## How does it work?
 
