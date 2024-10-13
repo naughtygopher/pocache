@@ -10,35 +10,84 @@
 
 Pocache (`poh-cash (/poʊ kæʃ/)`), **P**reemptive **o**ptimistic cache, is a lightweight in-app caching package. It introduces preemptive cache updates, optimizing performance in concurrent environments by reducing redundant database calls while maintaining fresh data. It uses [Hashicorp's Go LRU package](https://github.com/hashicorp/golang-lru) as the default storage.
 
+Yet another _elegant_ solution for the infamous [Thundering herd problem](https://en.wikipedia.org/wiki/Thundering_herd_problem), save your database(s)!
+
 ## Key Features
 
 1. **Preemptive Cache Updates:** Automatically updates cache entries _nearing_ expiration.
 2. **Threshold Window:** Configurable time window before cache expiration to trigger updates.
-3. **Serve stale**: Opt-in configuration to serve even expired cache and do a background refresh.
-4. **Debounced Updates:** Prevents excessive I/O calls by debouncing concurrent requests for the same key.
-5. **Custom store**: customizable underlying storage to extend in-app cache to external database
+3. **Serve stale**: Opt-in configuration to serve expired cache and do a background refresh.
+4. **Debounced Updates:** Prevents excessive I/O calls by debouncing concurrent update requests for the same key.
+5. **Custom store**: customizable underlying storage to extend/replace in-app cache or use external cache database.
+
+## Why use Pocache?
+
+In highly concurrent environments (e.g., web servers), multiple requests try to access the same cache entry simultaneously. Without query call suppression / call debouncing, the app would query the underlying database multiple times until the cache is refreshed. While trying to solve the thundering herd problem, most applications serve stale/expired cache until the update is completed.
+
+Pocache solves these scenarios by combining debounce mechanism along with optimistic updates during the threshold window, keeping the cache up to date all the time and never having to serve stale cache!
 
 ## How does it work?
 
 Given a cache expiration time and a threshold window, Pocache triggers a preemptive cache update when a value is accessed within the threshold window.
+
 Example:
 
 -   Cache expiration: 10 minutes
 -   Threshold window: 1 minute
 
 ```
-|______________________ __threshold window__________ ______________|
-0 min                   9 mins                       10 mins
-Add key here            Get key within window        Key expires
+|______________________ ____threshold window__________ ______________|
+0 min                   9 mins                         10 mins
+Add key here            Get key within window          Key expires
 ```
 
-When a key is fetched between 9-10 minutes (within the threshold window), Pocache initiates an update for that key (_preemptive_). This ensures fresh data availability, anticipating future usage (_optimistic_).
+When a key is fetched within the threshold window (between 9-10 minutes), Pocache initiates a background update for that key (_preemptive_). This ensures fresh data availability, anticipating future usage (_optimistic_).
 
-## Why use preemptive updates?
+## Custom store
 
-In highly concurrent environments (e.g., web servers), multiple requests might try to access the same cache entry simultaneously. Without preemptive updates, the system would query the underlying database multiple times until the cache is refreshed.
+Pocache defines the following interface for its underlying storage. You can configure storage of your choice as long as it implements this simple interface, and is provided as a configuration.
 
-Additionally by debouncing these requests, Pocache ensures only a single update is triggered, reducing load on both the underlying storage and the application itself.
+```golang
+type store[K comparable, T any] interface {
+	Add(key K, value *Payload[T]) (evicted bool)
+	Get(key K) (value *Payload[T], found bool)
+	Remove(key K) (present bool)
+}
+```
+
+Below is an example(not for production use) of setting a custom store.
+
+```golang
+type mystore[Key comparable, T any] struct{
+    data sync.Map
+}
+
+func (ms *mystore[K,T]) Add(key K, value *Payload[T]) (evicted bool) {
+    ms.data.Store(key, value)
+}
+
+func (ms *mystore[K,T]) Get(key K) (value *Payload[T], found bool) {
+    v, found  := ms.data.Load(key)
+    if !found {
+        return nil, found
+    }
+
+    value, _ := v.(*Payload[T])
+    return value, true
+}
+
+func (ms *mystore[K,T]) Remove(key K) (present bool) {
+    _, found  := ms.data.Load(key)
+    ms.data.Delete(key)
+    return found
+}
+
+func foo() {
+    cache, err := pocache.New(pocache.Config[string, string]{
+        Store: mystore{data: sync.Map{}}
+	})
+}
+```
 
 ## Full example
 
