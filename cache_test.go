@@ -321,3 +321,20 @@ func TestSanitize(tt *testing.T) {
 	asserter.Equal(cfg.Threshold, time.Second*59)
 	asserter.Equal(cfg.UpdaterTimeout, time.Second)
 }
+
+func TestPayload(tt *testing.T) {
+	asserter := assert.New(tt)
+
+	expireAt := time.Now().Add(time.Minute)
+	cea := atomic.Pointer[time.Time]{}
+	cea.Store(&expireAt)
+	value := "hello world"
+
+	pyl := Payload[string]{
+		cacheExpireAt: &cea,
+		payload:       value,
+	}
+
+	asserter.Equal(value, pyl.Value())
+	asserter.EqualValues(expireAt, pyl.Expiry())
+}

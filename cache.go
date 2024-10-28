@@ -16,13 +16,23 @@ var (
 	ErrValidation = errors.New("invalid")
 )
 
-type Store[K comparable, T any] interface {
-	Add(key K, value *Payload[T]) (evicted bool)
-	Get(key K) (value *Payload[T], found bool)
-	Remove(key K) (present bool)
-}
+type (
+	// ErrOnUpdate defines the type of the hook function, which is called
+	// if there's any error when trying to update a key in the background
+	ErrOnUpdate func(err error)
 
-type ErrOnUpdate func(err error)
+	// Updater defines the function which is used to get the new value
+	// of a key. This is required for pocache to do background updates
+	Updater[K comparable, T any] func(ctx context.Context, key K) (T, error)
+
+	// Store defines the interface required for the underlying storage of pocache.
+	Store[K comparable, T any] interface {
+		Add(key K, value *Payload[T]) (evicted bool)
+		Get(key K) (value *Payload[T], found bool)
+		Remove(key K) (present bool)
+	}
+)
+
 type Config[K comparable, T any] struct {
 	// LRUCacheSize is the number of keys to be maintained in the cache
 	LRUCacheSize uint
@@ -106,7 +116,13 @@ type Payload[T any] struct {
 	payload       T
 }
 
-type Updater[K comparable, T any] func(ctx context.Context, key K) (T, error)
+func (pyl *Payload[T]) Expiry() time.Time {
+	return *pyl.cacheExpireAt.Load()
+}
+
+func (pyl *Payload[T]) Value() T {
+	return pyl.payload
+}
 
 type Tuple[K comparable, T any] struct {
 	Key   K
@@ -185,10 +201,6 @@ func (ch *Cache[K, T]) deleteListener(keys <-chan K) {
 }
 
 func (ch *Cache[K, T]) updateListener(keys <-chan K) {
-	if ch.updater == nil {
-		return
-	}
-
 	for key := range keys {
 		ch.update(key)
 	}
