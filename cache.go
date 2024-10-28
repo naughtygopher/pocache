@@ -110,18 +110,22 @@ func (cfg *Config[K, T]) SanitizeValidate() error {
 }
 
 type Payload[T any] struct {
-	// cacheExpireAt is an atomic pointer to avoid race condition
+	// ExpireAt is an atomic pointer to avoid race condition
 	// while concurrently reading the timestamp
-	cacheExpireAt *atomic.Pointer[time.Time]
-	payload       T
+	ExpireAt *atomic.Pointer[time.Time]
+	Payload  T
 }
 
 func (pyl *Payload[T]) Expiry() time.Time {
-	return *pyl.cacheExpireAt.Load()
+	if pyl.ExpireAt == nil {
+		return time.Time{}
+	}
+
+	return *pyl.ExpireAt.Load()
 }
 
 func (pyl *Payload[T]) Value() T {
-	return pyl.payload
+	return pyl.Payload
 }
 
 type Tuple[K comparable, T any] struct {
@@ -232,7 +236,7 @@ func (ch *Cache[K, T]) Get(key K) Value[T] {
 		return v
 	}
 
-	expireAt := cp.cacheExpireAt.Load()
+	expireAt := cp.ExpireAt.Load()
 	delta := time.Since(*expireAt)
 	if delta >= 0 && ch.disableServeStale {
 		// cache expired and should be removed
@@ -246,7 +250,7 @@ func (ch *Cache[K, T]) Get(key K) Value[T] {
 	}
 
 	v.Found = true
-	v.V = cp.payload
+	v.V = cp.Payload
 
 	return v
 }
@@ -261,8 +265,8 @@ func (ch *Cache[K, T]) Add(key K, value T) (evicted bool) {
 	cea.Store(&expireAt)
 
 	return ch.store.Add(key, &Payload[T]{
-		cacheExpireAt: &cea,
-		payload:       value,
+		ExpireAt: &cea,
+		Payload:  value,
 	})
 }
 
