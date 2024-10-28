@@ -16,7 +16,7 @@ var (
 	ErrValidation = errors.New("invalid")
 )
 
-type store[K comparable, T any] interface {
+type Store[K comparable, T any] interface {
 	Add(key K, value *Payload[T]) (evicted bool)
 	Get(key K) (value *Payload[T], found bool)
 	Remove(key K) (present bool)
@@ -43,8 +43,8 @@ type Config[K comparable, T any] struct {
 
 	// UpdaterTimeout is the context time out for when the updater function is called
 	UpdaterTimeout time.Duration
-	Updater        updater[K, T]
-	Store          store[K, T]
+	Updater        Updater[K, T]
+	Store          Store[K, T]
 
 	// ErrWatcher is called when there's any error when trying to update cache
 	ErrWatcher ErrOnUpdate
@@ -106,7 +106,7 @@ type Payload[T any] struct {
 	payload       T
 }
 
-type updater[K comparable, T any] func(ctx context.Context, key K) (T, error)
+type Updater[K comparable, T any] func(ctx context.Context, key K) (T, error)
 
 type Tuple[K comparable, T any] struct {
 	Key   K
@@ -121,7 +121,7 @@ type Value[T any] struct {
 type Cache[K comparable, T any] struct {
 	isDisabled        bool
 	disableServeStale bool
-	store             store[K, T]
+	store             Store[K, T]
 	cacheAge          time.Duration
 
 	deleteQ chan<- K
@@ -130,7 +130,7 @@ type Cache[K comparable, T any] struct {
 	// threshold is the duration within which if the cache is about to expire, it is eligible to be updated
 	threshold      time.Duration
 	updateQ        chan<- K
-	updater        updater[K, T]
+	updater        Updater[K, T]
 	updaterTimeout time.Duration
 	// updateInProgress is used to handle update debounce
 	updateInProgress *sync.Map
@@ -263,7 +263,7 @@ func (ch *Cache[K, T]) BulkAdd(tuples []Tuple[K, T]) (evicted []bool) {
 	return evicted
 }
 
-func DefaultStore[K comparable, T any](lrusize int) (store[K, T], error) {
+func DefaultStore[K comparable, T any](lrusize int) (Store[K, T], error) {
 	lCache, err := lru.New[K, *Payload[T]](int(lrusize))
 	if err != nil {
 		return nil, fmt.Errorf("failed initializing LRU cache: %w", err)
