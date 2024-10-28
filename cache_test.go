@@ -325,16 +325,47 @@ func TestSanitize(tt *testing.T) {
 func TestPayload(tt *testing.T) {
 	asserter := assert.New(tt)
 
-	expireAt := time.Now().Add(time.Minute)
-	cea := atomic.Pointer[time.Time]{}
-	cea.Store(&expireAt)
-	value := "hello world"
+	tt.Run("expiry & payload available", func(t *testing.T) {
+		expireAt := time.Now().Add(time.Minute)
+		cea := atomic.Pointer[time.Time]{}
+		cea.Store(&expireAt)
+		value := "hello world"
+		pyl := Payload[string]{
+			ExpireAt: &cea,
+			Payload:  value,
+		}
+		asserter.Equal(value, pyl.Value())
+		asserter.EqualValues(expireAt, pyl.Expiry())
+	})
 
-	pyl := Payload[string]{
-		cacheExpireAt: &cea,
-		payload:       value,
-	}
+	tt.Run("expiry not available", func(t *testing.T) {
+		value := "hello world"
+		pyl := Payload[string]{
+			ExpireAt: nil,
+			Payload:  value,
+		}
+		asserter.Equal(value, pyl.Value())
+		asserter.EqualValues(time.Time{}, pyl.Expiry())
+	})
 
-	asserter.Equal(value, pyl.Value())
-	asserter.EqualValues(expireAt, pyl.Expiry())
+	tt.Run("value not available", func(t *testing.T) {
+		expireAt := time.Now().Add(time.Minute)
+		cea := atomic.Pointer[time.Time]{}
+		cea.Store(&expireAt)
+		pyl := Payload[any]{
+			ExpireAt: &cea,
+			Payload:  nil,
+		}
+		asserter.Equal(nil, pyl.Value())
+		asserter.EqualValues(expireAt, pyl.Expiry())
+	})
+
+	tt.Run("expiry & value not available", func(t *testing.T) {
+		pyl := Payload[any]{
+			ExpireAt: nil,
+			Payload:  nil,
+		}
+		asserter.Equal(nil, pyl.Value())
+		asserter.EqualValues(time.Time{}, pyl.Expiry())
+	})
 }
