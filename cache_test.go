@@ -2,6 +2,7 @@ package pocache
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -153,66 +154,51 @@ func TestCache(tt *testing.T) {
 		asserter.True(found)
 	})
 
-	tt.Run("err watcher", func(t *testing.T) {
-		forcedErr := fmt.Errorf("forced error")
-		ranUpdater := atomic.Bool{}
-		ranErrWatcher := atomic.Bool{}
-
+	tt.Run("disabled", func(t *testing.T) {
 		cache, err := New(Config[string, any]{
 			LRUCacheSize: 10000,
 			CacheAge:     time.Minute,
 			Threshold:    time.Second * 59,
-			DisableCache: false,
+			DisableCache: true,
 			Updater: func(ctx context.Context, key string) (any, error) {
-				ranUpdater.Store(true)
-				return nil, forcedErr
-			},
-			ErrWatcher: func(watcherErr error) {
-				ranErrWatcher.Store(true)
-				asserter.ErrorIs(watcherErr, forcedErr)
+				return key, nil
 			},
 		})
 		requirer.NoError(err)
 
 		_ = cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
 		// wait for threshold window
-		time.Sleep(time.Second)
+		time.Sleep(time.Second * 2)
+
 		// trigger auto update within threshold window
 		_ = cache.Get(prefix)
 
-		// wait for the updater callback to be executed
-		time.Sleep(time.Second * 2)
-		asserter.True(ranUpdater.Load())
-		asserter.True(ranErrWatcher.Load())
+		// wait for updater to be executed
+		time.Sleep(time.Second * 1)
+		v := cache.Get(prefix)
+		asserter.False(v.Found)
 	})
 
-	tt.Run("no err watcher", func(t *testing.T) {
-		forcedErr := fmt.Errorf("forced error")
-		ranUpdater := atomic.Bool{}
-		ranErrWatcher := atomic.Bool{}
-
+	tt.Run("no updater", func(t *testing.T) {
 		cache, err := New(Config[string, any]{
 			LRUCacheSize: 10000,
 			CacheAge:     time.Minute,
 			Threshold:    time.Second * 59,
 			DisableCache: false,
-			Updater: func(ctx context.Context, key string) (any, error) {
-				ranUpdater.Store(true)
-				return nil, forcedErr
-			},
+			Updater:      nil,
 		})
 		requirer.NoError(err)
 
-		_ = cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
+		_ = cache.Add(prefix, value)
 		// wait for threshold window
-		time.Sleep(time.Second)
+		time.Sleep(time.Second * 2)
 		// trigger auto update within threshold window
 		_ = cache.Get(prefix)
-
-		// wait for the updater callback to be executed
+		// wait for updater to run
 		time.Sleep(time.Second * 2)
-		asserter.True(ranUpdater.Load())
-		asserter.False(ranErrWatcher.Load())
+
+		v := cache.Get(prefix)
+		asserter.EqualValues(value, v.V)
 	})
 
 }
@@ -368,4 +354,143 @@ func TestPayload(tt *testing.T) {
 		asserter.Equal(nil, pyl.Value())
 		asserter.EqualValues(time.Time{}, pyl.Expiry())
 	})
+}
+
+func TestErrWatcher(tt *testing.T) {
+	var (
+		prefix   = "prefix"
+		value    = "value"
+		requirer = require.New(tt)
+		asserter = require.New(tt)
+	)
+
+	tt.Run("err watcher", func(t *testing.T) {
+		forcedErr := fmt.Errorf("forced error")
+		ranUpdater := atomic.Bool{}
+		ranErrWatcher := atomic.Bool{}
+
+		cache, err := New(Config[string, any]{
+			LRUCacheSize: 10000,
+			CacheAge:     time.Minute,
+			Threshold:    time.Second * 59,
+			DisableCache: false,
+			Updater: func(ctx context.Context, key string) (any, error) {
+				ranUpdater.Store(true)
+				return nil, forcedErr
+			},
+			ErrWatcher: func(watcherErr error) {
+				ranErrWatcher.Store(true)
+				asserter.ErrorIs(watcherErr, forcedErr)
+			},
+		})
+		requirer.NoError(err)
+
+		_ = cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
+		// wait for threshold window
+		time.Sleep(time.Second)
+		// trigger auto update within threshold window
+		_ = cache.Get(prefix)
+
+		// wait for the updater callback to be executed
+		time.Sleep(time.Second * 2)
+		asserter.True(ranUpdater.Load())
+		asserter.True(ranErrWatcher.Load())
+	})
+
+	tt.Run("no err watcher", func(t *testing.T) {
+		forcedErr := fmt.Errorf("forced error")
+		ranUpdater := atomic.Bool{}
+		ranErrWatcher := atomic.Bool{}
+
+		cache, err := New(Config[string, any]{
+			LRUCacheSize: 10000,
+			CacheAge:     time.Minute,
+			Threshold:    time.Second * 59,
+			DisableCache: false,
+			Updater: func(ctx context.Context, key string) (any, error) {
+				ranUpdater.Store(true)
+				return nil, forcedErr
+			},
+		})
+		requirer.NoError(err)
+
+		_ = cache.BulkAdd([]Tuple[string, any]{{Key: prefix, Value: value}})
+		// wait for threshold window
+		time.Sleep(time.Second)
+		// trigger auto update within threshold window
+		_ = cache.Get(prefix)
+
+		// wait for the updater callback to be executed
+		time.Sleep(time.Second * 2)
+		asserter.True(ranUpdater.Load())
+		asserter.False(ranErrWatcher.Load())
+	})
+
+	tt.Run("err watcher: catch panic text", func(t *testing.T) {
+		ranUpdater := atomic.Bool{}
+		ranErrWatcher := atomic.Bool{}
+
+		cache, err := New(Config[string, any]{
+			LRUCacheSize: 10000,
+			CacheAge:     time.Minute,
+			Threshold:    time.Second * 59,
+			DisableCache: false,
+			Updater: func(ctx context.Context, key string) (any, error) {
+				ranUpdater.Store(true)
+				panic("force panicked")
+			},
+			ErrWatcher: func(watcherErr error) {
+				ranErrWatcher.Store(true)
+				asserter.ErrorContains(watcherErr, "force panicked")
+			},
+		})
+		requirer.NoError(err)
+		cache.Add(prefix, value)
+
+		// wait for threshold window
+		time.Sleep(time.Second)
+		// trigger auto update within threshold window
+		_ = cache.Get(prefix)
+
+		// wait for the updater callback to be executed
+		time.Sleep(time.Second * 2)
+		asserter.True(ranUpdater.Load())
+		asserter.True(ranErrWatcher.Load())
+
+	})
+
+	tt.Run("err watcher: catch panic err", func(t *testing.T) {
+		ranUpdater := atomic.Bool{}
+		ranErrWatcher := atomic.Bool{}
+		ErrPanic := errors.New("panic err")
+
+		cache, err := New(Config[string, any]{
+			LRUCacheSize: 10000,
+			CacheAge:     time.Minute,
+			Threshold:    time.Second * 59,
+			DisableCache: false,
+			Updater: func(ctx context.Context, key string) (any, error) {
+				ranUpdater.Store(true)
+				panic(ErrPanic)
+			},
+			ErrWatcher: func(watcherErr error) {
+				ranErrWatcher.Store(true)
+				asserter.ErrorIs(watcherErr, ErrPanic)
+			},
+		})
+		requirer.NoError(err)
+		cache.Add(prefix, value)
+
+		// wait for threshold window
+		time.Sleep(time.Second)
+		// trigger auto update within threshold window
+		_ = cache.Get(prefix)
+
+		// wait for the updater callback to be executed
+		time.Sleep(time.Second * 2)
+		asserter.True(ranUpdater.Load())
+		asserter.True(ranErrWatcher.Load())
+
+	})
+
 }

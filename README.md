@@ -182,4 +182,4 @@ func main() {
 
 ## The gopher
 
-The gopher used here was created using [Gopherize.me](https://gopherize.me/). Incache helps you keep your application latency low and your database destressed.
+The gopher used here was created using [Gopherize.me](https://gopherize.me/). Pocache helps you to stop the herd from thundering.

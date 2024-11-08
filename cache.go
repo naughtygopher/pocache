@@ -14,6 +14,7 @@ import (
 
 var (
 	ErrValidation = errors.New("invalid")
+	ErrPanic      = errors.New("panicked")
 )
 
 type (
@@ -69,16 +70,15 @@ func (cfg *Config[K, T]) Sanitize() {
 		cfg.QLength = 1000
 	}
 
-	// there's no practical usecase of cache less than a second, as of now
-	if cfg.CacheAge == 0 {
+	if cfg.CacheAge <= 0 {
 		cfg.CacheAge = time.Minute
 	}
 
-	if cfg.Threshold == 0 {
+	if cfg.Threshold <= 0 {
 		cfg.Threshold = cfg.CacheAge - time.Second
 	}
 
-	if cfg.UpdaterTimeout == 0 {
+	if cfg.UpdaterTimeout <= 0 {
 		cfg.UpdaterTimeout = time.Second
 	}
 }
@@ -211,6 +211,20 @@ func (ch *Cache[K, T]) updateListener(keys <-chan K) {
 }
 
 func (ch *Cache[K, T]) update(key K) {
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			return
+		}
+		ch.updateInProgress.Delete(key)
+		err, isErr := rec.(error)
+		if isErr {
+			ch.errCallback(errors.Join(ErrPanic, err))
+			return
+		}
+		ch.errCallback(errors.Join(ErrPanic, fmt.Errorf("%+v", rec)))
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), ch.updaterTimeout)
 	defer cancel()
 
