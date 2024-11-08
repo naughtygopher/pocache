@@ -2,8 +2,8 @@
 
 [![](https://github.com/naughtygopher/pocache/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/naughtygopher/pocache/actions)
 [![Go Reference](https://pkg.go.dev/badge/github.com/naughtygopher/pocache.svg)](https://pkg.go.dev/github.com/naughtygopher/pocache)
-[![Go Report Card](https://goreportcard.com/badge/github.com/naughtygopher/pocache)](https://goreportcard.com/report/github.com/naughtygopher/pocache)
-[![Coverage Status](https://coveralls.io/repos/github/naughtygopher/pocache/badge.svg?branch=main)](https://coveralls.io/github/naughtygopher/pocache?branch=main)
+[![Go Report Card](https://goreportcard.com/badge/github.com/naughtygopher/pocache?cache_invalidate=v0.3.0)](https://goreportcard.com/report/github.com/naughtygopher/pocache)
+[![Coverage Status](https://coveralls.io/repos/github/naughtygopher/pocache/badge.svg?branch=main&cache_invalidate=v0.3.0)](https://coveralls.io/github/naughtygopher/pocache?branch=main)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/creativecreature/sturdyc/blob/master/LICENSE)
 
 # Pocache
