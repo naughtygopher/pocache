@@ -5,6 +5,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/naughtygopher/pocache?cache_invalidate=v0.3.0)](https://goreportcard.com/report/github.com/naughtygopher/pocache)
 [![Coverage Status](https://coveralls.io/repos/github/naughtygopher/pocache/badge.svg?branch=main&cache_invalidate=v0.3.0)](https://coveralls.io/github/naughtygopher/pocache?branch=main)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/creativecreature/sturdyc/blob/master/LICENSE)
+[![Mentioned in Awesome Go](https://awesome.re/mentioned-badge.svg)](https://github.com/avelino/awesome-go?tab=readme-ov-file#caches)
 
 # Pocache
 
