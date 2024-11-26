@@ -258,7 +258,9 @@ func (ch *Cache[K, T]) Get(key K) Value[T] {
 		return v
 	}
 
-	if delta.Abs() <= ch.threshold {
+	inTreshold := delta < 0 && delta.Abs() <= ch.threshold
+	expired := delta >= 0
+	if inTreshold || expired {
 		// key is eligible for update
 		ch.enqueueUpdate(key)
 	}
