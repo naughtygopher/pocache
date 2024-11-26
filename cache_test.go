@@ -262,6 +262,85 @@ func TestThresholdUpdater(tt *testing.T) {
 	})
 }
 
+func TestThresholdUpdaterStale(tt *testing.T) {
+	var (
+		requirer  = require.New(tt)
+		asserter  = require.New(tt)
+		cacheAge  = time.Second
+		threshold = time.Millisecond * 500
+	)
+
+	ranUpdater := atomic.Bool{}
+
+	ch, err := New(Config[string, string]{
+		ServeStale: true,
+		CacheAge:   cacheAge,
+		Threshold:  threshold,
+		Updater: func(ctx context.Context, key string) (string, error) {
+			ranUpdater.Store(true)
+			return key, nil
+		},
+	})
+	requirer.NoError(err)
+	tt.Run("before threshold", func(t *testing.T) {
+		ranUpdater.Store(false)
+		key := "key_1"
+		ch.Add(key, key)
+		ch.BulkAdd([]Tuple[string, string]{{Key: key, Value: key}})
+
+		v := ch.Get(key)
+		asserter.True(v.Found)
+		asserter.False(ranUpdater.Load())
+		asserter.EqualValues(key, v.V)
+	})
+
+	tt.Run("during threshold", func(t *testing.T) {
+		ranUpdater.Store(false)
+		key := "key_2"
+
+		ch.BulkAdd([]Tuple[string, string]{{Key: key, Value: key}})
+		time.Sleep((cacheAge - threshold) + time.Millisecond)
+		v := ch.Get(key)
+		asserter.True(v.Found)
+		asserter.EqualValues(key, v.V)
+		// wait for updater to complete execution
+		time.Sleep(time.Millisecond * 100)
+		asserter.True(ranUpdater.Load())
+	})
+
+	tt.Run("after threshold (cache expired)", func(t *testing.T) {
+		ranUpdater.Store(false)
+		key := "key_3"
+
+		ch.BulkAdd([]Tuple[string, string]{{Key: key, Value: key}})
+		time.Sleep(cacheAge + time.Millisecond)
+
+		v := ch.Get(key)
+		asserter.True(v.Found)
+		asserter.EqualValues(key, v.V)
+
+		// wait for updater to complete execution
+		time.Sleep(time.Millisecond * 100)
+		asserter.True(ranUpdater.Load())
+	})
+
+	tt.Run("long after threshold (cache expired)", func(t *testing.T) {
+		ranUpdater.Store(false)
+		key := "key_4"
+
+		ch.BulkAdd([]Tuple[string, string]{{Key: key, Value: key}})
+		time.Sleep(cacheAge + 2*threshold)
+
+		v := ch.Get(key)
+		asserter.True(v.Found)
+		asserter.EqualValues(key, v.V)
+
+		// wait for updater to complete execution
+		time.Sleep(time.Millisecond * 100)
+		asserter.True(ranUpdater.Load())
+	})
+}
+
 func TestValidate(tt *testing.T) {
 	asserter := assert.New(tt)
 	requirer := require.New(tt)
