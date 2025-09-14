@@ -203,6 +203,69 @@ func TestCache(tt *testing.T) {
 
 }
 
+func TestThresholdBulkUpdater(tt *testing.T) {
+	var (
+		requirer           = require.New(tt)
+		asserter           = require.New(tt)
+		cacheAge           = 2 * time.Second
+		threshold          = time.Second
+		bulkUpdaterLatency = 100 * time.Millisecond
+	)
+
+	ranUpdater := atomic.Int64{}
+
+	ch, err := New(Config[string, string]{
+		CacheAge:   cacheAge,
+		Threshold:  threshold,
+		ServeStale: true,
+		BulkUpdater: func(ctx context.Context, keys []string) []UpdateResult[string] {
+			// delay 100 millisecond
+			time.Sleep(bulkUpdaterLatency)
+			ranUpdater.Add(int64(len(keys)))
+			result := make([]UpdateResult[string], len(keys))
+			for idx, key := range keys {
+				result[idx] = UpdateResult[string]{
+					NewValue: key + "_updated",
+				}
+			}
+			return result
+		},
+	})
+	requirer.NoError(err)
+
+	// make the cache full of keys
+	keys := make([]string, 0, 1000)
+	for i := 0; i < 1000; i++ {
+		key := fmt.Sprintf("key_%d", i)
+		keys = append(keys, key)
+		ch.Add(key, key)
+	}
+
+	// sleep and wait to the time all of the keys need cache refreshing
+	time.Sleep(cacheAge - threshold + time.Millisecond)
+	for _, key := range keys {
+		v := ch.Get(key)
+		asserter.True(v.Found)
+		asserter.EqualValues(key, v.V)
+	}
+	// wait for the cache refreshing to finish
+	// including the delay we simulate inside BulkUpdator and some delay
+	time.Sleep(bulkUpdaterLatency + time.Millisecond*200)
+	// this is eventually and need retry, the reason is
+	// the batchupdater may split the queue into 3-4 smaller batches
+	asserter.Eventually(func() bool {
+		for idx, key := range keys {
+			v := ch.Get(key)
+			asserter.True(v.Found)
+			expected := fmt.Sprintf("key_%d_updated", idx)
+			if v.V != expected {
+				return false
+			}
+		}
+		return true
+	}, bulkUpdaterLatency*10, bulkUpdaterLatency)
+}
+
 func TestThresholdUpdater(tt *testing.T) {
 	var (
 		requirer  = require.New(tt)

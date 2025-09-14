@@ -20,11 +20,23 @@ var (
 type (
 	// ErrOnUpdate defines the type of the hook function, which is called
 	// if there's any error when trying to update a key in the background
+	// This function should not block the goroutine for too long
 	ErrOnUpdate func(err error)
 
 	// Updater defines the function which is used to get the new value
 	// of a key. This is required for pocache to do background updates
 	Updater[K comparable, T any] func(ctx context.Context, key K) (T, error)
+
+	// This function MUST return a slice with the same length as they number of keys
+	// received, else there is no way to tell which value belongs to which original key
+	// Update multiple expired keys at the same time
+	// This allows better parallelism for cache invalidation
+	BulkUpdater[K comparable, T any] func(ctx context.Context, keys []K) []UpdateResult[T]
+
+	UpdateResult[T any] struct {
+		NewValue T
+		Err      error
+	}
 
 	// Store defines the interface required for the underlying storage of pocache.
 	Store[K comparable, T any] interface {
@@ -55,7 +67,13 @@ type Config[K comparable, T any] struct {
 	// UpdaterTimeout is the context time out for when the updater function is called
 	UpdaterTimeout time.Duration
 	Updater        Updater[K, T]
-	Store          Store[K, T]
+
+	// An option to refresh multiple expired keys at a time
+	// If any of the item failed to update inside this bulk function, its update will happen
+	// next time there is another `Get`` on that key, and the `Get`` function may returns a stale
+	// data (depends on the config ServeStale) or a cache miss.
+	BulkUpdater BulkUpdater[K, T]
+	Store       Store[K, T]
 
 	// ErrWatcher is called when there's any error when trying to update cache
 	ErrWatcher ErrOnUpdate
@@ -151,6 +169,7 @@ type Cache[K comparable, T any] struct {
 	threshold      time.Duration
 	updateQ        chan<- K
 	updater        Updater[K, T]
+	bulkUpdater    BulkUpdater[K, T]
 	updaterTimeout time.Duration
 	// updateInProgress is used to handle update debounce
 	updateInProgress *sync.Map
@@ -159,7 +178,7 @@ type Cache[K comparable, T any] struct {
 
 // initUpdater initializes all configuration required for threshold based update
 func (ch *Cache[K, T]) initUpdater(cfg *Config[K, T]) {
-	if cfg.Updater == nil {
+	if cfg.Updater == nil && cfg.BulkUpdater == nil {
 		return
 	}
 
@@ -168,6 +187,7 @@ func (ch *Cache[K, T]) initUpdater(cfg *Config[K, T]) {
 	ch.updateQ = updateQ
 
 	ch.updater = cfg.Updater
+	ch.bulkUpdater = cfg.BulkUpdater
 	ch.updaterTimeout = cfg.UpdaterTimeout
 	ch.updateInProgress = new(sync.Map)
 	ch.errWatcher = cfg.ErrWatcher
@@ -184,7 +204,7 @@ func (ch *Cache[K, T]) errCallback(err error) {
 }
 
 func (ch *Cache[K, T]) enqueueUpdate(key K) {
-	if ch.updater == nil {
+	if ch.updater == nil && ch.bulkUpdater == nil {
 		return
 	}
 
@@ -205,8 +225,85 @@ func (ch *Cache[K, T]) deleteListener(keys <-chan K) {
 }
 
 func (ch *Cache[K, T]) updateListener(keys <-chan K) {
-	for key := range keys {
-		ch.update(key)
+	if ch.updater != nil {
+		for key := range keys {
+			ch.update(key)
+		}
+	}
+	if ch.bulkUpdater != nil {
+		batchTicker := time.NewTicker(15 * time.Millisecond)
+
+		batched := make([]K, 0, cap(keys))
+		for {
+			select {
+			case <-batchTicker.C:
+				// nothing to do here, sleeping
+				if len(keys) == 0 {
+					continue
+				}
+			drainingQueue:
+				for {
+					// some leftover keys to update in batch
+					for i := 0; i < len(keys); i++ {
+						batched = append(batched, <-keys)
+					}
+					ch.bulkUpdate(batched)
+					batched = batched[:0]
+					// continue the forloop
+					// if there exists keys from the channel
+					// this is because after calling ch.bulkUpdate
+					// which may block (let's say 100ms)
+					// there can be new leftover keys need data refresh
+					if len(keys) == 0 {
+						break drainingQueue
+					}
+				}
+
+			}
+		}
+	}
+
+}
+func (ch *Cache[K, T]) bulkUpdate(keys []K) {
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			return
+		}
+		for _, k := range keys {
+			ch.updateInProgress.Delete(k)
+		}
+		err, isErr := rec.(error)
+		if isErr {
+			ch.errCallback(errors.Join(ErrPanic, err))
+			return
+		}
+		ch.errCallback(errors.Join(ErrPanic, fmt.Errorf("%+v", rec)))
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), ch.updaterTimeout)
+	defer cancel()
+
+	updateResults := ch.bulkUpdater(ctx, keys)
+
+	// TODO: not sure if there is a better error handling here
+	// since user does not conform with the function spec, there is no way to tell
+	// which value belongs to which key:w:w
+	if len(updateResults) != len(keys) {
+		panic(fmt.Sprintf("BulkUpdator returns a slice with length not equal" +
+			" to the original keys provided"))
+	}
+	for idx := range keys {
+		updateResult := updateResults[idx]
+		if updateResult.Err != nil {
+			ch.errCallback(updateResult.Err)
+			continue
+		}
+		ch.Add(keys[idx], updateResult.NewValue)
+	}
+
+	for _, k := range keys {
+		ch.updateInProgress.Delete(k)
 	}
 }
 
