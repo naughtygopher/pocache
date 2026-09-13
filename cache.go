@@ -234,31 +234,27 @@ func (ch *Cache[K, T]) updateListener(keys <-chan K) {
 		batchTicker := time.NewTicker(15 * time.Millisecond)
 
 		batched := make([]K, 0, cap(keys))
-		for {
-			select {
-			case <-batchTicker.C:
-				// nothing to do here, sleeping
+		for range batchTicker.C {
+			// nothing to do here, sleeping
+			if len(keys) == 0 {
+				continue
+			}
+		drainingQueue:
+			for {
+				// some leftover keys to update in batch
+				for i := 0; i < len(keys); i++ {
+					batched = append(batched, <-keys)
+				}
+				ch.bulkUpdate(batched)
+				batched = batched[:0]
+				// continue the forloop
+				// if there exists keys from the channel
+				// this is because after calling ch.bulkUpdate
+				// which may block (let's say 100ms)
+				// there can be new leftover keys need data refresh
 				if len(keys) == 0 {
-					continue
+					break drainingQueue
 				}
-			drainingQueue:
-				for {
-					// some leftover keys to update in batch
-					for i := 0; i < len(keys); i++ {
-						batched = append(batched, <-keys)
-					}
-					ch.bulkUpdate(batched)
-					batched = batched[:0]
-					// continue the forloop
-					// if there exists keys from the channel
-					// this is because after calling ch.bulkUpdate
-					// which may block (let's say 100ms)
-					// there can be new leftover keys need data refresh
-					if len(keys) == 0 {
-						break drainingQueue
-					}
-				}
-
 			}
 		}
 	}
