@@ -1,6 +1,6 @@
 module github.com/naughtygopher/pocache
 
-go 1.22
+go 1.26
 
 require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7

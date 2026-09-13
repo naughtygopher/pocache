@@ -12,7 +12,7 @@ Pocache (`poh-cash /poʊ kæʃ/`), **P**reemptive **o**ptimistic cache, is a lig
 
 ## Installation
 
-Requires **Go 1.22 or newer**.
+Requires **Go 1.26 or newer** on `main`.
 
 ```sh
 go get github.com/naughtygopher/pocache@latest
@@ -246,7 +246,7 @@ go test -race -covermode=atomic -coverprofile=coverage.out ./...
 golangci-lint run ./...
 ```
 
-GitHub Actions tests Go 1.22, Go 1.25, and the two current stable release lines (`oldstable` and `stable`). Lint runs on the latest stable Go with golangci-lint v2.13.2. Coverage is uploaded to Coveralls from the latest stable Go job on pushes to `main` and manual runs. Dependabot checks action versions weekly.
+GitHub Actions tests the Go 1.26 floor and the two current stable release lines (`oldstable` and `stable`). Lint runs on the latest stable Go with golangci-lint v2.13.2. Coverage is uploaded to Coveralls from the latest stable Go job on pushes to `main` and manual runs. Dependabot checks action versions weekly.
 
 ## License
 
