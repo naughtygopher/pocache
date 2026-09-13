@@ -15,7 +15,7 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    build:
+    test:
         name: Build and test (Go ${{ matrix.go }})
         runs-on: ubuntu-latest
         timeout-minutes: 15
@@ -70,3 +70,17 @@ jobs:
               uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
               with:
                   version: v2.13.2
+
+    build:
+        # Keep the required check name stable when the Go matrix changes.
+        name: build
+        needs: [test, lint]
+        if: ${{ always() }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - name: Require all build, test, and lint jobs to succeed
+              env:
+                  TEST_RESULT: ${{ needs.test.result }}
+                  LINT_RESULT: ${{ needs.lint.result }}
+              run: test "$TEST_RESULT" = success && test "$LINT_RESULT" = success
