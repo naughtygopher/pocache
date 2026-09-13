@@ -1,6 +1,3 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
 name: Go
 
 on:
@@ -8,32 +5,68 @@ on:
         branches: ["main"]
     pull_request:
         branches: ["main"]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
 
 jobs:
     build:
+        name: Build and test (Go ${{ matrix.go }})
         runs-on: ubuntu-latest
+        timeout-minutes: 15
+        strategy:
+            fail-fast: false
+            matrix:
+                go: ["1.22.x", "1.25.x", "oldstable", "stable"]
+        env:
+            # Ensure the compatibility jobs cannot silently select a newer Go.
+            GOTOOLCHAIN: local
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
             - name: Set up Go
-              uses: actions/setup-go@v4
+              uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
               with:
-                  go-version: "1.23"
+                  go-version: ${{ matrix.go }}
 
             - name: Build
-              run: go build -v ./...
+              run: go build ./...
 
-            - name: Tests
-              run: |
-                  go install github.com/mattn/goveralls@latest
-                  go test -race -covermode atomic -coverprofile=covprofile ./...
+            - name: Vet
+              run: go vet ./...
+
+            - name: Test with race detection and coverage
+              run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
 
             - name: Send coverage
-              uses: shogo82148/actions-goveralls@v1
+              # Publish once; fork PRs still run all build and test checks.
+              if: matrix.go == 'stable' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+              uses: shogo82148/actions-goveralls@77a1912dca42260ee3e97f61bd13ea7ef40baa93 # v1.11.2
               with:
-                  path-to-profile: covprofile
+                  github-token: ${{ github.token }}
+                  path-to-profile: coverage.out
+
+    lint:
+        name: Lint
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+            - name: Set up Go
+              uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+              with:
+                  go-version: stable
+
+            - name: Check formatting
+              run: test -z "$(gofmt -l .)"
 
             - name: golangci-lint
-              uses: golangci/golangci-lint-action@v6
+              uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
               with:
-                  version: v1.60
+                  version: v2.13.2
