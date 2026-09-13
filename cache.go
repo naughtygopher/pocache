@@ -156,7 +156,13 @@ type Value[T any] struct {
 	Found bool
 }
 
+// Cache is safe for concurrent use when its Store supports concurrent access.
+// A Cache must not be copied after construction. Call Close to stop its workers.
 type Cache[K comparable, T any] struct {
+	ctx     context.Context
+	cancel  context.CancelFunc
+	workers sync.WaitGroup
+
 	isDisabled        bool
 	disableServeStale bool
 	store             Store[K, T]
@@ -192,7 +198,7 @@ func (ch *Cache[K, T]) initUpdater(cfg *Config[K, T]) {
 	ch.updateInProgress = new(sync.Map)
 	ch.errWatcher = cfg.ErrWatcher
 
-	go ch.updateListener(updateQ)
+	ch.workers.Go(func() { ch.updateListener(updateQ) })
 }
 
 func (ch *Cache[K, T]) errCallback(err error) {
@@ -208,53 +214,72 @@ func (ch *Cache[K, T]) enqueueUpdate(key K) {
 		return
 	}
 
-	_, inprogress := ch.updateInProgress.Load(key)
+	if ch.ctx.Err() != nil {
+		return
+	}
+	_, inprogress := ch.updateInProgress.LoadOrStore(key, struct{}{})
 	if inprogress {
 		// key is already queued for update, no need to update again
 		return
 	}
 
-	ch.updateInProgress.Store(key, struct{}{})
-	ch.updateQ <- key
+	select {
+	case <-ch.ctx.Done():
+		ch.updateInProgress.Delete(key)
+	case ch.updateQ <- key:
+	}
 }
 
 func (ch *Cache[K, T]) deleteListener(keys <-chan K) {
-	for key := range keys {
-		ch.store.Remove(key)
+	for {
+		select {
+		case <-ch.ctx.Done():
+			return
+		case key := <-keys:
+			if ch.ctx.Err() != nil {
+				return
+			}
+			ch.store.Remove(key)
+		}
 	}
 }
 
 func (ch *Cache[K, T]) updateListener(keys <-chan K) {
 	if ch.updater != nil {
-		for key := range keys {
-			ch.update(key)
+		for {
+			select {
+			case <-ch.ctx.Done():
+				return
+			case key := <-keys:
+				if ch.ctx.Err() != nil {
+					return
+				}
+				ch.update(key)
+			}
 		}
 	}
 	if ch.bulkUpdater != nil {
 		batchTicker := time.NewTicker(15 * time.Millisecond)
+		defer batchTicker.Stop()
 
 		batched := make([]K, 0, cap(keys))
-		for range batchTicker.C {
-			// nothing to do here, sleeping
-			if len(keys) == 0 {
-				continue
+		for {
+			select {
+			case <-ch.ctx.Done():
+				return
+			case <-batchTicker.C:
 			}
-		drainingQueue:
-			for {
-				// some leftover keys to update in batch
-				for i := 0; i < len(keys); i++ {
+			for len(keys) > 0 {
+				if ch.ctx.Err() != nil {
+					return
+				}
+				// Snapshot the queue length; reading keys shrinks it.
+				for range len(keys) {
 					batched = append(batched, <-keys)
 				}
 				ch.bulkUpdate(batched)
+				clear(batched)
 				batched = batched[:0]
-				// continue the forloop
-				// if there exists keys from the channel
-				// this is because after calling ch.bulkUpdate
-				// which may block (let's say 100ms)
-				// there can be new leftover keys need data refresh
-				if len(keys) == 0 {
-					break drainingQueue
-				}
 			}
 		}
 	}
@@ -277,7 +302,7 @@ func (ch *Cache[K, T]) bulkUpdate(keys []K) {
 		ch.errCallback(errors.Join(ErrPanic, fmt.Errorf("%+v", rec)))
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), ch.updaterTimeout)
+	ctx, cancel := context.WithTimeout(ch.ctx, ch.updaterTimeout)
 	defer cancel()
 
 	updateResults := ch.bulkUpdater(ctx, keys)
@@ -318,7 +343,7 @@ func (ch *Cache[K, T]) update(key K) {
 		ch.errCallback(errors.Join(ErrPanic, fmt.Errorf("%+v", rec)))
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), ch.updaterTimeout)
+	ctx, cancel := context.WithTimeout(ch.ctx, ch.updaterTimeout)
 	defer cancel()
 
 	value, err := ch.updater(ctx, key)
@@ -334,7 +359,7 @@ func (ch *Cache[K, T]) update(key K) {
 func (ch *Cache[K, T]) Get(key K) Value[T] {
 	var v Value[T]
 
-	if ch.isDisabled {
+	if ch.isDisabled || ch.ctx.Err() != nil {
 		return v
 	}
 
@@ -347,7 +372,10 @@ func (ch *Cache[K, T]) Get(key K) Value[T] {
 	delta := time.Since(*expireAt)
 	if delta >= 0 && ch.disableServeStale {
 		// cache expired and should be removed
-		ch.deleteQ <- key
+		select {
+		case <-ch.ctx.Done():
+		case ch.deleteQ <- key:
+		}
 		return v
 	}
 
@@ -365,7 +393,7 @@ func (ch *Cache[K, T]) Get(key K) Value[T] {
 }
 
 func (ch *Cache[K, T]) Add(key K, value T) (evicted bool) {
-	if ch.isDisabled {
+	if ch.isDisabled || ch.ctx.Err() != nil {
 		return false
 	}
 
@@ -386,6 +414,20 @@ func (ch *Cache[K, T]) BulkAdd(tuples []Tuple[K, T]) (evicted []bool) {
 	}
 
 	return evicted
+}
+
+// Close cancels active updater contexts, abandons queued work, and waits for
+// background workers to exit. It is safe to call concurrently and repeatedly.
+// After shutdown begins, Get returns a miss and Add is a no-op; calls already
+// in progress may finish. The store is retained and is not closed or cleared.
+// Updaters must honor context cancellation, and store methods and ErrWatcher
+// must return for Close to finish. They must not call Close on this cache.
+func (ch *Cache[K, T]) Close() {
+	ch.cancel()
+	ch.workers.Wait()
+	if ch.updateInProgress != nil {
+		ch.updateInProgress.Clear()
+	}
 }
 
 func DefaultStore[K comparable, T any](lrusize int) (Store[K, T], error) {
@@ -411,7 +453,10 @@ func New[K comparable, T any](cfg Config[K, T]) (*Cache[K, T], error) {
 	}
 
 	deleteQ := make(chan K, cfg.QLength)
+	ctx, cancel := context.WithCancel(context.Background())
 	ch := &Cache[K, T]{
+		ctx:               ctx,
+		cancel:            cancel,
 		isDisabled:        cfg.DisableCache,
 		disableServeStale: !cfg.ServeStale,
 		store:             cstore,
@@ -421,7 +466,7 @@ func New[K comparable, T any](cfg Config[K, T]) (*Cache[K, T], error) {
 
 	ch.initUpdater(&cfg)
 
-	go ch.deleteListener(deleteQ)
+	ch.workers.Go(func() { ch.deleteListener(deleteQ) })
 
 	return ch, nil
 }

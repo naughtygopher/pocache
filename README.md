@@ -12,13 +12,13 @@ Pocache (`poh-cash /poʊ kæʃ/`), **P**reemptive **o**ptimistic cache, is a lig
 
 ## Installation
 
-Requires **Go 1.22 or newer**.
+Requires **Go 1.26 or newer** on `main`.
 
 ```sh
 go get github.com/naughtygopher/pocache@latest
 ```
 
-The latest tagged version is **v0.3.2**. This README describes `main`; the [bulk updater](#bulk-updates-main-unreleased) is not yet in a tagged release. To use that feature:
+The latest tagged version is **v0.3.2**. This README describes `main`; the Go 1.26 floor, `Close`, and [bulk updater](#bulk-updates-main-unreleased) are not yet in a tagged release. To use the examples below:
 
 ```sh
 go get github.com/naughtygopher/pocache@main
@@ -58,6 +58,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	defer cache.Close()
 
 	const key = "hello"
 	value := cache.Get(key)
@@ -116,11 +118,18 @@ Zero sizes and non-positive durations are replaced by defaults. `CacheAge` must 
 
 Configure either `Updater` or `BulkUpdater`; if both are set, `Updater` takes precedence. Updaters and `ErrWatcher` run on background workers and should return promptly. Queueing can block when a queue is full.
 
-`New` starts background goroutines. There is currently no `Close` or shutdown method, so reuse long-lived cache instances rather than creating one per request. Custom stores must support concurrent access; callers must also synchronize mutations to cached pointers, maps, or slices.
+`New` starts background goroutines. Reuse a cache across requests and call `Close()` when its owner shuts down. Custom stores must support concurrent access; callers must also synchronize mutations to cached pointers, maps, or slices.
+
+### Shutdown
+
+`Close()` cancels active updater contexts, abandons queued updates and deletions, stops the batch ticker, and waits for background workers to exit. Repeated and concurrent calls are safe. Updaters must honor cancellation; store methods and `ErrWatcher` must return promptly. These callbacks must not call `Close()` on their own cache, because it waits for them.
+
+After shutdown begins, `Get` returns a miss, `Add` returns `false` without writing, and `BulkAdd` returns one `false` per input. Calls already in progress may finish. The store is retained and is neither cleared nor closed; the cache cannot be restarted. For example, create one cache when a service starts, share it across handlers, and close it after the handlers have stopped.
 
 ## API
 
 - `New(Config[K, T]) (*Cache[K, T], error)` constructs a cache.
+- `Close()` stops background work and waits for workers to exit; available on `main`, unreleased.
 - `Add(key, value) bool` inserts or replaces a value and resets its expiration. The result reports whether the store evicted an entry.
 - `BulkAdd([]Tuple[K, T]) []bool` adds values and returns an eviction result for each input, in order.
 - `Get(key) Value[T]` returns `V` and `Found`; check `Found` to distinguish a miss from a cached zero value.
@@ -166,6 +175,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer cache.Close()
 	cache.BulkAdd([]pocache.Tuple[string, string]{
 		{Key: "one", Value: "initial one"},
 		{Key: "two", Value: "initial two"},
@@ -232,6 +242,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer cache.Close()
 	cache.Add("hello", "world")
 	fmt.Println(cache.Get("hello").V)
 }
@@ -246,7 +257,9 @@ go test -race -covermode=atomic -coverprofile=coverage.out ./...
 golangci-lint run ./...
 ```
 
-GitHub Actions tests Go 1.22, Go 1.25, and the two current stable release lines (`oldstable` and `stable`). Lint runs on the latest stable Go with golangci-lint v2.13.2. Coverage is uploaded to Coveralls from the latest stable Go job on pushes to `main` and manual runs. Dependabot checks action versions weekly.
+GitHub Actions tests the Go 1.26 floor and the two current stable release lines (`oldstable` and `stable`). PR checks run against `main` and the `maintenance` base used by the stacked upgrade PR. Lint runs on the latest stable Go with golangci-lint v2.13.2, including modernization checks. Coverage is uploaded to Coveralls from the latest stable Go job on pushes to `main` and manual runs. Dependabot checks action versions weekly.
+
+Timing tests use `testing/synctest`, with one real-clock smoke test. Run benchmarks with `go test -run '^$' -bench . -benchmem ./...`.
 
 ## License
 
