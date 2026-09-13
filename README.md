@@ -257,7 +257,7 @@ go test -race -covermode=atomic -coverprofile=coverage.out ./...
 golangci-lint run ./...
 ```
 
-GitHub Actions tests the Go 1.26 floor and the two current stable release lines (`oldstable` and `stable`). Lint runs on the latest stable Go with golangci-lint v2.13.2. Coverage is uploaded to Coveralls from the latest stable Go job on pushes to `main` and manual runs. Dependabot checks action versions weekly.
+GitHub Actions tests the Go 1.26 floor and the two current stable release lines (`oldstable` and `stable`). PR checks run against `main` and the `maintenance` base used by the stacked upgrade PR. Lint runs on the latest stable Go with golangci-lint v2.13.2, including modernization checks. Coverage is uploaded to Coveralls from the latest stable Go job on pushes to `main` and manual runs. Dependabot checks action versions weekly.
 
 Timing tests use `testing/synctest`, with one real-clock smoke test. Run benchmarks with `go test -run '^$' -bench . -benchmem ./...`.
 
