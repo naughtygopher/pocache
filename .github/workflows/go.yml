@@ -46,7 +46,7 @@ jobs:
             - name: Send coverage
               # Publish once; fork PRs still run all build and test checks.
               if: matrix.go == 'stable' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-              uses: shogo82148/actions-goveralls@77a1912dca42260ee3e97f61bd13ea7ef40baa93 # v1.11.2
+              uses: shogo82148/actions-goveralls@daabb2902148216a0b13c82107a6e67ed97f796e # v1.11.3
               with:
                   github-token: ${{ github.token }}
                   path-to-profile: coverage.out
