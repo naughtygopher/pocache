@@ -130,7 +130,7 @@ After shutdown begins, `Get` returns a miss, `Add` returns `false` without writi
 - `BulkAdd([]Tuple[K, T]) []bool` adds values and returns an eviction result for each input, in order.
 - `Get(key) Value[T]` returns `V` and `Found`; check `Found` to distinguish a miss from a cached zero value.
 - `DefaultStore[K, T](size)` creates the default LRU store.
-- `Payload[T].Value()` and `Payload[T].Expiry()` expose stored data and expiration for store integrations.
+- `Payload[T]` is the stored entry, with a plain `ExpireAt time.Time` and the value. `Value()` and `Expiry()` expose them for store integrations. Stores must return payloads unchanged; a zero `ExpireAt` is treated as already expired.
 
 See the [Go reference](https://pkg.go.dev/github.com/naughtygopher/pocache) for released API documentation. Configuration errors can be matched with `errors.Is(err, pocache.ErrValidation)`; recovered updater panics are reported through `ErrWatcher` with `pocache.ErrPanic`.
 

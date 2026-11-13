@@ -623,11 +623,9 @@ func TestPayload(tt *testing.T) {
 
 	tt.Run("expiry & payload available", func(t *testing.T) {
 		expireAt := time.Now().Add(time.Minute)
-		cea := atomic.Pointer[time.Time]{}
-		cea.Store(&expireAt)
 		value := "hello world"
 		pyl := Payload[string]{
-			ExpireAt: &cea,
+			ExpireAt: expireAt,
 			Payload:  value,
 		}
 		asserter.Equal(value, pyl.Value())
@@ -637,7 +635,7 @@ func TestPayload(tt *testing.T) {
 	tt.Run("expiry not available", func(t *testing.T) {
 		value := "hello world"
 		pyl := Payload[string]{
-			ExpireAt: nil,
+			ExpireAt: time.Time{},
 			Payload:  value,
 		}
 		asserter.Equal(value, pyl.Value())
@@ -646,10 +644,8 @@ func TestPayload(tt *testing.T) {
 
 	tt.Run("value not available", func(t *testing.T) {
 		expireAt := time.Now().Add(time.Minute)
-		cea := atomic.Pointer[time.Time]{}
-		cea.Store(&expireAt)
 		pyl := Payload[any]{
-			ExpireAt: &cea,
+			ExpireAt: expireAt,
 			Payload:  nil,
 		}
 		asserter.Equal(nil, pyl.Value())
@@ -658,11 +654,51 @@ func TestPayload(tt *testing.T) {
 
 	tt.Run("expiry & value not available", func(t *testing.T) {
 		pyl := Payload[any]{
-			ExpireAt: nil,
+			ExpireAt: time.Time{},
 			Payload:  nil,
 		}
 		asserter.Equal(nil, pyl.Value())
 		asserter.EqualValues(time.Time{}, pyl.Expiry())
+	})
+}
+
+// TestZeroExpireAt verifies a payload with a zero ExpireAt, e.g. one rebuilt by a custom
+// store which dropped the timestamp, is treated as expired instead of panicking.
+func TestZeroExpireAt(tt *testing.T) {
+	tt.Run("serve stale disabled", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			requirer := require.New(t)
+			cache, err := New(Config[string, string]{})
+			requirer.NoError(err)
+			defer cache.Close()
+
+			cache.store.Add("key", &Payload[string]{Payload: "value"})
+			requirer.False(cache.Get("key").Found)
+			synctest.Wait()
+			_, found := cache.store.Get("key")
+			requirer.False(found, "an expired payload is removed")
+		})
+	})
+
+	tt.Run("serve stale enabled", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			requirer := require.New(t)
+			cache, err := New(Config[string, string]{
+				ServeStale: true,
+				Updater: func(ctx context.Context, key string) (string, error) {
+					return key + "_updated", nil
+				},
+			})
+			requirer.NoError(err)
+			defer cache.Close()
+
+			cache.store.Add("key", &Payload[string]{Payload: "value"})
+			v := cache.Get("key")
+			requirer.True(v.Found)
+			requirer.Equal("value", v.V)
+			synctest.Wait()
+			requirer.Equal("key_updated", cache.Get("key").V, "an expired payload is refreshed")
+		})
 	})
 }
 
