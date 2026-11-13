@@ -12,16 +12,10 @@ Pocache (`poh-cash /poʊ kæʃ/`), **P**reemptive **o**ptimistic cache, is a lig
 
 ## Installation
 
-Requires **Go 1.26 or newer** on `main`.
+Requires **Go 1.26 or newer**.
 
 ```sh
 go get github.com/naughtygopher/pocache@latest
-```
-
-The latest tagged version is **v0.3.2**. This README describes `main`; the Go 1.26 floor, `Close`, and [bulk updater](#bulk-updates-main-unreleased) are not yet in a tagged release. To use the examples below:
-
-```sh
-go get github.com/naughtygopher/pocache@main
 ```
 
 ## Usage
@@ -110,7 +104,7 @@ Preemptive refresh and per-key update tracking help reduce the [thundering herd 
 | `DisableCache` | `false` | Make `Get` always miss and `Add` a no-op. |
 | `UpdaterTimeout` | `time.Second` | Deadline on the context passed to an updater. The updater must honor cancellation. |
 | `Updater` | `nil` | Refresh one key at a time. |
-| `BulkUpdater` | `nil` | Refresh batches of keys; available on `main`, unreleased. Mutually exclusive with `Updater`. |
+| `BulkUpdater` | `nil` | Refresh batches of keys. Mutually exclusive with `Updater`. |
 | `BulkSize` | `100` | Maximum keys passed to one `BulkUpdater` call. |
 | `BulkMaxWait` | `15ms` | Longest a key waits in the queue before a partial batch is sent to the `BulkUpdater`. |
 | `Store` | Default LRU | Custom concurrent storage implementing `Store[K, T]`. |
@@ -131,7 +125,7 @@ After shutdown begins, `Get` returns a miss, `Add` returns `false` without writi
 ## API
 
 - `New(Config[K, T]) (*Cache[K, T], error)` constructs a cache.
-- `Close()` stops background work and waits for workers to exit; available on `main`, unreleased.
+- `Close()` stops background work and waits for workers to exit.
 - `Add(key, value) bool` inserts or replaces a value and resets its expiration. The result reports whether the store evicted an entry.
 - `BulkAdd([]Tuple[K, T]) []bool` adds values and returns an eviction result for each input, in order.
 - `Get(key) Value[T]` returns `V` and `Found`; check `Found` to distinguish a miss from a cached zero value.
@@ -140,7 +134,7 @@ After shutdown begins, `Get` returns a miss, `Add` returns `false` without writi
 
 See the [Go reference](https://pkg.go.dev/github.com/naughtygopher/pocache) for released API documentation. Configuration errors can be matched with `errors.Is(err, pocache.ErrValidation)`; recovered updater panics are reported through `ErrWatcher` with `pocache.ErrPanic`.
 
-## Bulk updates (`main`, unreleased)
+## Bulk updates
 
 `BulkUpdater` receives queued keys in batches of up to `BulkSize`. A partial batch is sent once its oldest key has waited `BulkMaxWait`. It returns the new values as a `map[K]T`; there is no ordering to maintain. Returned values replace the cached ones. A key missing from the map keeps its current value and is retried by a later eligible read. Keys in the map that were not requested are ignored.
 
