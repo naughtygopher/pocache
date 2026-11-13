@@ -118,12 +118,12 @@ func TestCloseJoinsWorkers(t *testing.T) {
 		},
 		"bulkUpdater": {
 			LRUCacheSize: 10, CacheAge: time.Minute, Threshold: 59 * time.Second,
-			BulkUpdater: func(ctx context.Context, keys []string) []UpdateResult[string] {
-				results := make([]UpdateResult[string], len(keys))
-				for i, k := range keys {
-					results[i] = UpdateResult[string]{NewValue: k}
+			BulkUpdater: func(ctx context.Context, keys []string) (map[string]string, error) {
+				values := make(map[string]string, len(keys))
+				for _, k := range keys {
+					values[k] = k
 				}
-				return results
+				return values, nil
 			},
 		},
 	}
@@ -183,15 +183,11 @@ func TestCloseCancelsActiveUpdater(t *testing.T) {
 
 			cache, err := New(Config[string, string]{
 				LRUCacheSize: 10, CacheAge: 2 * time.Second, Threshold: time.Second,
-				BulkUpdater: func(ctx context.Context, keys []string) []UpdateResult[string] {
+				BulkUpdater: func(ctx context.Context, keys []string) (map[string]string, error) {
 					close(entered)
 					<-ctx.Done()
 					gotErr.Store(ctx.Err())
-					results := make([]UpdateResult[string], len(keys))
-					for i := range keys {
-						results[i] = UpdateResult[string]{Err: ctx.Err()}
-					}
-					return results
+					return nil, ctx.Err()
 				},
 			})
 			requirer.NoError(err)
@@ -201,7 +197,7 @@ func TestCloseCancelsActiveUpdater(t *testing.T) {
 			time.Sleep(time.Second + time.Millisecond)
 			synctest.Wait()
 			cache.Get("k1")
-			time.Sleep(20 * time.Millisecond) // let the 15ms batch ticker fire
+			time.Sleep(20 * time.Millisecond) // let the BulkMaxWait (15ms) timer fire
 			synctest.Wait()
 			<-entered // bulk updater is active before Close runs
 
@@ -258,7 +254,7 @@ func TestCloseAbandonsQueuedWork(t *testing.T) {
 
 			cache.Get("k1") // dequeued immediately, updater blocks on gate
 			synctest.Wait()
-			cache.Get("k2") // buffered in updateQ (QLength=1), never dequeued
+			cache.Get("k2") // buffered in the update queue (QLength=1), never dequeued
 			synctest.Wait()
 
 			cache.Close()
@@ -280,23 +276,21 @@ func TestCloseAbandonsQueuedWork(t *testing.T) {
 			cache, err := New(Config[string, string]{
 				LRUCacheSize: 10, QLength: 2, CacheAge: 2 * time.Second,
 				Threshold: time.Second, UpdaterTimeout: time.Hour,
-				BulkUpdater: func(ctx context.Context, keys []string) []UpdateResult[string] {
+				BulkUpdater: func(ctx context.Context, keys []string) (map[string]string, error) {
 					mu.Lock()
 					batches = append(batches, append([]string(nil), keys...))
 					mu.Unlock()
 
-					results := make([]UpdateResult[string], len(keys))
 					select {
 					case <-gate:
-						for i, k := range keys {
-							results[i] = UpdateResult[string]{NewValue: k + "_upd"}
+						values := make(map[string]string, len(keys))
+						for _, k := range keys {
+							values[k] = k + "_upd"
 						}
+						return values, nil
 					case <-ctx.Done():
-						for i := range keys {
-							results[i] = UpdateResult[string]{Err: ctx.Err()}
-						}
+						return nil, ctx.Err()
 					}
-					return results
 				},
 			})
 			requirer.NoError(err)
@@ -307,7 +301,7 @@ func TestCloseAbandonsQueuedWork(t *testing.T) {
 			time.Sleep(time.Second + time.Millisecond)
 			synctest.Wait()
 			cache.Get("k1")
-			time.Sleep(20 * time.Millisecond) // batch ticker fires, k1's batch blocks on gate
+			time.Sleep(20 * time.Millisecond) // BulkMaxWait timer fires, k1's batch blocks on gate
 			synctest.Wait()
 
 			cache.Add("k2", "v2")
@@ -327,12 +321,11 @@ func TestCloseAbandonsQueuedWork(t *testing.T) {
 	})
 }
 
-// TestCloseReleasesBlockedUpdateQueueSender fills updateQ to capacity while
-// the update worker is busy, so a subsequent enqueue attempt blocks trying
-// to send. Close must cancel the context so the blocked sender (inside
-// enqueueUpdate's select) is released, while the truly in-progress call
-// (which only unblocks via gate, not ctx) makes Close wait for it to finish.
-func TestCloseReleasesBlockedUpdateQueueSender(t *testing.T) {
+// TestGetDoesNotBlockWhenUpdateQueueFull fills the update queue to capacity while
+// the update worker is busy. A subsequent Get must return immediately, skipping the
+// update and releasing its in-progress marker so a later Get can retry. Close must
+// still wait for the truly in-progress call, which only unblocks via gate, not ctx.
+func TestGetDoesNotBlockWhenUpdateQueueFull(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		requirer := require.New(t)
 		gate := make(chan struct{})
@@ -361,18 +354,23 @@ func TestCloseReleasesBlockedUpdateQueueSender(t *testing.T) {
 		cache.Get("k2") // buffered (QLength=1)
 		synctest.Wait()
 
-		blockedDone := make(chan struct{})
+		getDone := make(chan Value[string])
 		go func() {
-			cache.Get("k3") // updateQ full, worker busy: enqueue must block
-			close(blockedDone)
+			getDone <- cache.Get("k3") // queue full, worker busy: update must be skipped
 		}()
 		synctest.Wait()
 
 		select {
-		case <-blockedDone:
-			requirer.Fail("Get(k3) should still be blocked before Close")
+		case v := <-getDone:
+			requirer.True(v.Found)
+			requirer.Equal("v3", v.V, "the cached value is still served")
 		default:
+			requirer.FailNow("Get(k3) must not block on a full update queue")
 		}
+		_, inprogress := cache.updateInProgress.Load("k3")
+		requirer.False(inprogress, "a skipped update must release its in-progress marker")
+		_, inprogress = cache.updateInProgress.Load("k2")
+		requirer.True(inprogress, "a queued update keeps its in-progress marker")
 
 		closeDone := make(chan struct{})
 		go func() {
@@ -381,11 +379,6 @@ func TestCloseReleasesBlockedUpdateQueueSender(t *testing.T) {
 		}()
 		synctest.Wait()
 
-		select {
-		case <-blockedDone:
-		default:
-			requirer.Fail("blocked enqueue must be released once Close cancels the context")
-		}
 		select {
 		case <-closeDone:
 			requirer.Fail("Close should still be waiting on the in-progress updater")
@@ -403,11 +396,12 @@ func TestCloseReleasesBlockedUpdateQueueSender(t *testing.T) {
 	})
 }
 
-// TestCloseReleasesBlockedDeleteQueueSender mirrors the update-queue test
-// above for deleteQ, using blockingStore to hold Remove "in progress". It
-// also verifies the store is retained (not cleared): the in-progress
+// TestGetDoesNotBlockWhenDeleteQueueFull mirrors the update-queue test above for
+// deleteQ, using blockingStore to hold Remove "in progress". A Get on an expired key
+// must still return a miss when the delete queue is full, and the removal is skipped.
+// It also verifies the store is retained (not cleared) on Close: the in-progress
 // removal finishes, but the queued one is abandoned.
-func TestCloseReleasesBlockedDeleteQueueSender(t *testing.T) {
+func TestGetDoesNotBlockWhenDeleteQueueFull(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		requirer := require.New(t)
 		store := newBlockingStore[string, string]()
@@ -429,17 +423,17 @@ func TestCloseReleasesBlockedDeleteQueueSender(t *testing.T) {
 		requirer.False(cache.Get("k2").Found) // buffered (QLength=1)
 		synctest.Wait()
 
-		blockedDone := make(chan struct{})
+		getDone := make(chan Value[string])
 		go func() {
-			cache.Get("k3") // deleteQ full, listener busy: send must block
-			close(blockedDone)
+			getDone <- cache.Get("k3") // deleteQ full, listener busy: delete must be skipped
 		}()
 		synctest.Wait()
 
 		select {
-		case <-blockedDone:
-			requirer.Fail("Get(k3) should still be blocked before Close")
+		case v := <-getDone:
+			requirer.False(v.Found, "an expired key is still a miss")
 		default:
+			requirer.FailNow("Get(k3) must not block on a full delete queue")
 		}
 
 		closeDone := make(chan struct{})
@@ -449,11 +443,6 @@ func TestCloseReleasesBlockedDeleteQueueSender(t *testing.T) {
 		}()
 		synctest.Wait()
 
-		select {
-		case <-blockedDone:
-		default:
-			requirer.Fail("blocked delete-queue sender must be released once Close cancels the context")
-		}
 		select {
 		case <-closeDone:
 			requirer.Fail("Close should still be waiting on the in-progress Remove call")
@@ -475,7 +464,7 @@ func TestCloseReleasesBlockedDeleteQueueSender(t *testing.T) {
 		_, foundK2 := store.Get("k2")
 		requirer.True(foundK2, "queued deletion for k2 must be abandoned; store retained as-is")
 		_, foundK3 := store.Get("k3")
-		requirer.True(foundK3, "k3 was never dequeued so it must remain untouched")
+		requirer.True(foundK3, "k3's deletion was skipped so it must remain untouched")
 	})
 }
 
