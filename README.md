@@ -110,19 +110,21 @@ Preemptive refresh and per-key update tracking help reduce the [thundering herd 
 | `DisableCache` | `false` | Make `Get` always miss and `Add` a no-op. |
 | `UpdaterTimeout` | `time.Second` | Deadline on the context passed to an updater. The updater must honor cancellation. |
 | `Updater` | `nil` | Refresh one key at a time. |
-| `BulkUpdater` | `nil` | Refresh batches of keys; available on `main`, unreleased. |
+| `BulkUpdater` | `nil` | Refresh batches of keys; available on `main`, unreleased. Mutually exclusive with `Updater`. |
+| `BulkSize` | `100` | Maximum keys passed to one `BulkUpdater` call. |
+| `BulkMaxWait` | `15ms` | Longest a key waits in the queue before a partial batch is sent to the `BulkUpdater`. |
 | `Store` | Default LRU | Custom concurrent storage implementing `Store[K, T]`. |
 | `ErrWatcher` | `nil` | Callback for background update errors and recovered updater panics. |
 
 Zero sizes and non-positive durations are replaced by defaults. `CacheAge` must be greater than the configured `Threshold`. For cache ages of one second or less, set an explicit positive threshold smaller than the cache age to avoid the non-positive derived default.
 
-Configure either `Updater` or `BulkUpdater`; if both are set, `Updater` takes precedence. Updaters and `ErrWatcher` run on background workers and should return promptly. Queueing can block when a queue is full.
+Configure either `Updater` or `BulkUpdater`; setting both fails `New` with `ErrValidation`. Updaters and `ErrWatcher` run on background workers and should return promptly. Background work is queued without blocking `Get`: if the update queue is full, that refresh is skipped and a later read within the threshold window queues it again; if the deletion queue is full while serving expired values is disabled, `Get` still returns a miss and the removal is skipped until a later read or store eviction. Raise `QLength` if reads outpace your updater.
 
 `New` starts background goroutines. Reuse a cache across requests and call `Close()` when its owner shuts down. Custom stores must support concurrent access; callers must also synchronize mutations to cached pointers, maps, or slices.
 
 ### Shutdown
 
-`Close()` cancels active updater contexts, abandons queued updates and deletions, stops the batch ticker, and waits for background workers to exit. Repeated and concurrent calls are safe. Updaters must honor cancellation; store methods and `ErrWatcher` must return promptly. These callbacks must not call `Close()` on their own cache, because it waits for them.
+`Close()` cancels active updater contexts, abandons queued updates and deletions, and waits for background workers to exit. Repeated and concurrent calls are safe. Updaters must honor cancellation; store methods and `ErrWatcher` must return promptly. These callbacks must not call `Close()` on their own cache, because it waits for them.
 
 After shutdown begins, `Get` returns a miss, `Add` returns `false` without writing, and `BulkAdd` returns one `false` per input. Calls already in progress may finish. The store is retained and is neither cleared nor closed; the cache cannot be restarted. For example, create one cache when a service starts, share it across handlers, and close it after the handlers have stopped.
 
@@ -140,7 +142,9 @@ See the [Go reference](https://pkg.go.dev/github.com/naughtygopher/pocache) for 
 
 ## Bulk updates (`main`, unreleased)
 
-`BulkUpdater` receives queued keys in batches. It must return exactly one `UpdateResult[T]` per key, in the same order. Successful results replace the cached values; per-key errors are sent to `ErrWatcher`, and later eligible reads can retry them. A result-count mismatch is reported as a recovered panic.
+`BulkUpdater` receives queued keys in batches of up to `BulkSize`. A partial batch is sent once its oldest key has waited `BulkMaxWait`. It returns the new values as a `map[K]T`; there is no ordering to maintain. Returned values replace the cached ones. A key missing from the map keeps its current value and is retried by a later eligible read. Keys in the map that were not requested are ignored.
+
+If the function returns an error, values returned alongside it are still stored, and the error is sent to `ErrWatcher` wrapped in `pocache.ErrBulkUpdate`. A panic is recovered and reported with `pocache.ErrPanic`; its keys become eligible again. The `keys` slice is reused after the function returns, so copy it if you need to keep it.
 
 For example, this configuration uses an in-memory data source in place of a batch database query:
 
@@ -160,16 +164,12 @@ func main() {
 	cache, err := pocache.New(pocache.Config[string, string]{
 		CacheAge:  10 * time.Minute,
 		Threshold: time.Minute,
-		BulkUpdater: func(ctx context.Context, keys []string) []pocache.UpdateResult[string] {
-			results := make([]pocache.UpdateResult[string], len(keys))
-			for i, key := range keys {
-				if err := ctx.Err(); err != nil {
-					results[i].Err = err
-					continue
-				}
-				results[i].NewValue = "updated " + key
+		BulkUpdater: func(ctx context.Context, keys []string) (map[string]string, error) {
+			values := make(map[string]string, len(keys))
+			for _, key := range keys {
+				values[key] = "updated " + key
 			}
-			return results
+			return values, ctx.Err()
 		},
 	})
 	if err != nil {
