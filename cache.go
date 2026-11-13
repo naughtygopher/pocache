@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
@@ -148,19 +147,15 @@ func (cfg *Config[K, T]) SanitizeValidate() error {
 	return cfg.Validate()
 }
 
+// Payload is the value stored in a Store. It is never modified after it is added to the
+// store, so it is safe to read concurrently. A zero ExpireAt is treated as already expired.
 type Payload[T any] struct {
-	// ExpireAt is an atomic pointer to avoid race condition
-	// while concurrently reading the timestamp
-	ExpireAt *atomic.Pointer[time.Time]
+	ExpireAt time.Time
 	Payload  T
 }
 
 func (pyl *Payload[T]) Expiry() time.Time {
-	if pyl.ExpireAt == nil {
-		return time.Time{}
-	}
-
-	return *pyl.ExpireAt.Load()
+	return pyl.ExpireAt
 }
 
 func (pyl *Payload[T]) Value() T {
@@ -353,8 +348,7 @@ func (ch *Cache[K, T]) Get(key K) Value[T] {
 		return v
 	}
 
-	expireAt := cp.ExpireAt.Load()
-	delta := time.Since(*expireAt)
+	delta := time.Since(cp.ExpireAt)
 	if delta >= 0 && ch.disableServeStale {
 		// cache expired and should be removed. If the delete queue is full the removal is
 		// skipped, the key is removed on a later `Get` or by the store's eviction
@@ -383,12 +377,8 @@ func (ch *Cache[K, T]) Add(key K, value T) (evicted bool) {
 		return false
 	}
 
-	expireAt := time.Now().Add(ch.cacheAge)
-	cea := atomic.Pointer[time.Time]{}
-	cea.Store(&expireAt)
-
 	return ch.store.Add(key, &Payload[T]{
-		ExpireAt: &cea,
+		ExpireAt: time.Now().Add(ch.cacheAge),
 		Payload:  value,
 	})
 }
