@@ -299,23 +299,30 @@ func TestThresholdBulkUpdater(tt *testing.T) {
 			bulkUpdaterLatency = 100 * time.Millisecond
 		)
 
-		ranUpdater := atomic.Int64{}
+		var (
+			ranUpdater = atomic.Int64{}
+			mu         sync.Mutex
+			batchSizes []int
+		)
 
 		ch, err := New(Config[string, string]{
-			CacheAge:   cacheAge,
-			Threshold:  threshold,
-			ServeStale: true,
-			BulkUpdater: func(ctx context.Context, keys []string) []UpdateResult[string] {
+			CacheAge:    cacheAge,
+			Threshold:   threshold,
+			ServeStale:  true,
+			BulkSize:    250,
+			BulkMaxWait: 15 * time.Millisecond,
+			BulkUpdater: func(ctx context.Context, keys []string) (map[string]string, error) {
 				// delay 100 millisecond
 				time.Sleep(bulkUpdaterLatency)
 				ranUpdater.Add(int64(len(keys)))
-				result := make([]UpdateResult[string], len(keys))
-				for idx, key := range keys {
-					result[idx] = UpdateResult[string]{
-						NewValue: key + "_updated",
-					}
+				mu.Lock()
+				batchSizes = append(batchSizes, len(keys))
+				mu.Unlock()
+				values := make(map[string]string, len(keys))
+				for _, key := range keys {
+					values[key] = key + "_updated"
 				}
-				return result
+				return values, nil
 			},
 		})
 		requirer.NoError(err)
@@ -339,10 +346,13 @@ func TestThresholdBulkUpdater(tt *testing.T) {
 			asserter.EqualValues(key, v.V)
 		}
 
-		// The next tick drains the queued keys in one batch.
-		time.Sleep(15*time.Millisecond + bulkUpdaterLatency)
+		// the keys are processed in batches of BulkSize, one batch at a time
+		time.Sleep(4 * bulkUpdaterLatency)
 		synctest.Wait()
 		asserter.EqualValues(len(keys), ranUpdater.Load())
+		mu.Lock()
+		asserter.Equal([]int{250, 250, 250, 250}, batchSizes)
+		mu.Unlock()
 
 		for idx, key := range keys {
 			v := ch.Get(key)
@@ -560,6 +570,24 @@ func TestValidate(tt *testing.T) {
 		asserter.ErrorIs(err, ErrValidation)
 	})
 
+	tt.Run("both updater and bulk updater", func(t *testing.T) {
+		cfg := Config[string, string]{
+			LRUCacheSize: 10,
+			CacheAge:     time.Minute,
+			Threshold:    time.Second,
+			Updater:      func(ctx context.Context, key string) (string, error) { return key, nil },
+			BulkUpdater: func(ctx context.Context, keys []string) (map[string]string, error) {
+				return nil, nil
+			},
+		}
+		err := cfg.Validate()
+		requirer.NotNil(err)
+		asserter.ErrorIs(err, ErrValidation)
+
+		_, err = New(cfg)
+		asserter.ErrorIs(err, ErrValidation)
+	})
+
 	tt.Run("valid configuration", func(t *testing.T) {
 		cfg := Config[string, string]{
 			LRUCacheSize: 10,
@@ -581,6 +609,13 @@ func TestSanitize(tt *testing.T) {
 	asserter.Equal(cfg.CacheAge, time.Minute)
 	asserter.Equal(cfg.Threshold, time.Second*59)
 	asserter.Equal(cfg.UpdaterTimeout, time.Second)
+	asserter.Equal(cfg.BulkSize, uint(100))
+	asserter.Equal(cfg.BulkMaxWait, 15*time.Millisecond)
+
+	cfg = Config[string, string]{BulkSize: 5, BulkMaxWait: time.Second}
+	cfg.Sanitize()
+	asserter.Equal(cfg.BulkSize, uint(5))
+	asserter.Equal(cfg.BulkMaxWait, time.Second)
 }
 
 func TestPayload(tt *testing.T) {

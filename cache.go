@@ -10,11 +10,14 @@ import (
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2"
+	"github.com/naughtygopher/nibbler"
 )
 
 var (
 	ErrValidation = errors.New("invalid")
 	ErrPanic      = errors.New("panicked")
+	// ErrBulkUpdate wraps the error returned by a BulkUpdater
+	ErrBulkUpdate = errors.New("bulk update failed")
 )
 
 type (
@@ -27,16 +30,13 @@ type (
 	// of a key. This is required for pocache to do background updates
 	Updater[K comparable, T any] func(ctx context.Context, key K) (T, error)
 
-	// This function MUST return a slice with the same length as they number of keys
-	// received, else there is no way to tell which value belongs to which original key
-	// Update multiple expired keys at the same time
-	// This allows better parallelism for cache invalidation
-	BulkUpdater[K comparable, T any] func(ctx context.Context, keys []K) []UpdateResult[T]
-
-	UpdateResult[T any] struct {
-		NewValue T
-		Err      error
-	}
+	// BulkUpdater gets the new values of multiple keys at the same time, e.g. using a
+	// single database query. It returns the values by key. Keys missing from the returned
+	// map are not updated, and are retried on a later `Get`. Keys in the map which were
+	// not requested are ignored. If it returns an error, the values returned alongside it
+	// are still stored, and the error is reported to ErrWatcher wrapped in ErrBulkUpdate.
+	// The keys slice is reused after the function returns, it must not be modified or retained.
+	BulkUpdater[K comparable, T any] func(ctx context.Context, keys []K) (map[K]T, error)
 
 	// Store defines the interface required for the underlying storage of pocache.
 	Store[K comparable, T any] interface {
@@ -68,12 +68,18 @@ type Config[K comparable, T any] struct {
 	UpdaterTimeout time.Duration
 	Updater        Updater[K, T]
 
-	// An option to refresh multiple expired keys at a time
-	// If any of the item failed to update inside this bulk function, its update will happen
-	// next time there is another `Get`` on that key, and the `Get`` function may returns a stale
-	// data (depends on the config ServeStale) or a cache miss.
+	// BulkUpdater is an option to refresh multiple keys at a time. It is mutually exclusive
+	// with Updater, setting both is a validation error. If a key is not updated by it, its update
+	// will happen next time there is another `Get` on that key, and the `Get` function may return
+	// stale data (depends on the config ServeStale) or a cache miss.
 	BulkUpdater BulkUpdater[K, T]
-	Store       Store[K, T]
+	// BulkSize is the maximum number of keys sent to the BulkUpdater in a single call. If 0, defaults to 100
+	BulkSize uint
+	// BulkMaxWait is the longest a key waits in the queue before its batch is sent to the BulkUpdater,
+	// even if the batch is not full. If less than 1ms, defaults to 15ms
+	BulkMaxWait time.Duration
+
+	Store Store[K, T]
 
 	// ErrWatcher is called when there's any error when trying to update cache
 	ErrWatcher ErrOnUpdate
@@ -99,6 +105,14 @@ func (cfg *Config[K, T]) Sanitize() {
 	if cfg.UpdaterTimeout <= 0 {
 		cfg.UpdaterTimeout = time.Second
 	}
+
+	if cfg.BulkSize == 0 {
+		cfg.BulkSize = 100
+	}
+
+	if cfg.BulkMaxWait < time.Millisecond {
+		cfg.BulkMaxWait = 15 * time.Millisecond
+	}
 }
 
 func (cfg *Config[K, T]) Validate() error {
@@ -117,6 +131,13 @@ func (cfg *Config[K, T]) Validate() error {
 				cfg.CacheAge,
 				cfg.Threshold,
 			))
+	}
+
+	if cfg.Updater != nil && cfg.BulkUpdater != nil {
+		return errors.Join(
+			ErrValidation,
+			fmt.Errorf("updater and bulk updater are mutually exclusive"),
+		)
 	}
 
 	return nil
@@ -172,33 +193,53 @@ type Cache[K comparable, T any] struct {
 
 	// following configurations are used only when an updater & threshold update are enabled
 	// threshold is the duration within which if the cache is about to expire, it is eligible to be updated
-	threshold      time.Duration
-	updateQ        chan<- K
-	updater        Updater[K, T]
-	bulkUpdater    BulkUpdater[K, T]
-	updaterTimeout time.Duration
+	threshold   time.Duration
+	updateQ     chan<- K
+	updater     Updater[K, T]
+	bulkUpdater BulkUpdater[K, T]
 	// updateInProgress is used to handle update debounce
 	updateInProgress *sync.Map
 	errWatcher       ErrOnUpdate
 }
 
-// initUpdater initializes all configuration required for threshold based update
-func (ch *Cache[K, T]) initUpdater(cfg *Config[K, T]) {
+// initUpdater initializes all configuration required for threshold based update.
+// Both Updater and BulkUpdater are served by a nibbler micro batch processor, a single key
+// Updater is a batch of size 1.
+func (ch *Cache[K, T]) initUpdater(cfg *Config[K, T]) error {
 	if cfg.Updater == nil && cfg.BulkUpdater == nil {
-		return
+		return nil
 	}
 
 	ch.threshold = cfg.Threshold.Abs()
-	updateQ := make(chan K, cfg.QLength)
-	ch.updateQ = updateQ
-
 	ch.updater = cfg.Updater
 	ch.bulkUpdater = cfg.BulkUpdater
-	ch.updaterTimeout = cfg.UpdaterTimeout
 	ch.updateInProgress = new(sync.Map)
 	ch.errWatcher = cfg.ErrWatcher
 
-	ch.workers.Go(func() { ch.updateListener(updateQ) })
+	// The processors recover panics and report errors by themselves, to release the keys of
+	// the failed batch. Pending keys are dropped on Close, so FlushOnStop is left disabled.
+	ncfg := &nibbler.Config[K]{
+		ProcessingTimeout: cfg.UpdaterTimeout,
+		QueueSize:         cfg.QLength,
+		Size:              1,
+		Processor:         ch.processUpdate,
+		ResumeAfterErr:    true,
+	}
+	if ch.bulkUpdater != nil {
+		ncfg.Size = cfg.BulkSize
+		ncfg.TickerDuration = cfg.BulkMaxWait
+		ncfg.Processor = ch.processBulkUpdate
+	}
+
+	nib, err := nibbler.New(ncfg)
+	if err != nil {
+		return fmt.Errorf("failed initializing update processor: %w", err)
+	}
+
+	ch.updateQ = nib.Receiver()
+	ch.workers.Go(func() { _ = nib.Listen(ch.ctx) })
+
+	return nil
 }
 
 func (ch *Cache[K, T]) errCallback(err error) {
@@ -209,14 +250,22 @@ func (ch *Cache[K, T]) errCallback(err error) {
 	ch.errWatcher(err)
 }
 
+func (ch *Cache[K, T]) panicCallback(rec any) {
+	err, isErr := rec.(error)
+	if !isErr {
+		err = fmt.Errorf("%+v", rec)
+	}
+
+	ch.errCallback(errors.Join(ErrPanic, err))
+}
+
+// enqueueUpdate never blocks. If the update queue is full, the update is skipped and the
+// key becomes eligible again on a later `Get`.
 func (ch *Cache[K, T]) enqueueUpdate(key K) {
-	if ch.updater == nil && ch.bulkUpdater == nil {
+	if ch.updateQ == nil || ch.ctx.Err() != nil {
 		return
 	}
 
-	if ch.ctx.Err() != nil {
-		return
-	}
 	_, inprogress := ch.updateInProgress.LoadOrStore(key, struct{}{})
 	if inprogress {
 		// key is already queued for update, no need to update again
@@ -224,9 +273,9 @@ func (ch *Cache[K, T]) enqueueUpdate(key K) {
 	}
 
 	select {
-	case <-ch.ctx.Done():
-		ch.updateInProgress.Delete(key)
 	case ch.updateQ <- key:
+	default:
+		ch.updateInProgress.Delete(key)
 	}
 }
 
@@ -244,116 +293,52 @@ func (ch *Cache[K, T]) deleteListener(keys <-chan K) {
 	}
 }
 
-func (ch *Cache[K, T]) updateListener(keys <-chan K) {
-	if ch.updater != nil {
-		for {
-			select {
-			case <-ch.ctx.Done():
-				return
-			case key := <-keys:
-				if ch.ctx.Err() != nil {
-					return
-				}
-				ch.update(key)
-			}
-		}
-	}
-	if ch.bulkUpdater != nil {
-		batchTicker := time.NewTicker(15 * time.Millisecond)
-		defer batchTicker.Stop()
-
-		batched := make([]K, 0, cap(keys))
-		for {
-			select {
-			case <-ch.ctx.Done():
-				return
-			case <-batchTicker.C:
-			}
-			for len(keys) > 0 {
-				if ch.ctx.Err() != nil {
-					return
-				}
-				// Snapshot the queue length; reading keys shrinks it.
-				for range len(keys) {
-					batched = append(batched, <-keys)
-				}
-				ch.bulkUpdate(batched)
-				clear(batched)
-				batched = batched[:0]
-			}
-		}
-	}
-
-}
-func (ch *Cache[K, T]) bulkUpdate(keys []K) {
+// processUpdate is the nibbler processor for the single key Updater, the batch always has 1 key.
+// It always returns nil, as errors and panics are reported to ErrWatcher.
+func (ch *Cache[K, T]) processUpdate(ctx context.Context, _ nibbler.Trigger, keys []K) error {
+	key := keys[0]
 	defer func() {
-		rec := recover()
-		if rec == nil {
-			return
-		}
-		for _, k := range keys {
-			ch.updateInProgress.Delete(k)
-		}
-		err, isErr := rec.(error)
-		if isErr {
-			ch.errCallback(errors.Join(ErrPanic, err))
-			return
-		}
-		ch.errCallback(errors.Join(ErrPanic, fmt.Errorf("%+v", rec)))
-	}()
-
-	ctx, cancel := context.WithTimeout(ch.ctx, ch.updaterTimeout)
-	defer cancel()
-
-	updateResults := ch.bulkUpdater(ctx, keys)
-
-	// TODO: not sure if there is a better error handling here
-	// since user does not conform with the function spec, there is no way to tell
-	// which value belongs to which key:w:w
-	if len(updateResults) != len(keys) {
-		panic(fmt.Sprintf("BulkUpdator returns a slice with length not equal" +
-			" to the original keys provided"))
-	}
-	for idx := range keys {
-		updateResult := updateResults[idx]
-		if updateResult.Err != nil {
-			ch.errCallback(updateResult.Err)
-			continue
-		}
-		ch.Add(keys[idx], updateResult.NewValue)
-	}
-
-	for _, k := range keys {
-		ch.updateInProgress.Delete(k)
-	}
-}
-
-func (ch *Cache[K, T]) update(key K) {
-	defer func() {
-		rec := recover()
-		if rec == nil {
-			return
-		}
 		ch.updateInProgress.Delete(key)
-		err, isErr := rec.(error)
-		if isErr {
-			ch.errCallback(errors.Join(ErrPanic, err))
-			return
+		if rec := recover(); rec != nil {
+			ch.panicCallback(rec)
 		}
-		ch.errCallback(errors.Join(ErrPanic, fmt.Errorf("%+v", rec)))
 	}()
-
-	ctx, cancel := context.WithTimeout(ch.ctx, ch.updaterTimeout)
-	defer cancel()
 
 	value, err := ch.updater(ctx, key)
-	ch.updateInProgress.Delete(key)
 	if err != nil {
 		ch.errCallback(err)
-		return
+		return nil
 	}
 
 	ch.Add(key, value)
+	return nil
+}
+
+// processBulkUpdate is the nibbler processor for the BulkUpdater. It always returns nil, as
+// errors and panics are reported to ErrWatcher. The keys are released even if the BulkUpdater panics.
+func (ch *Cache[K, T]) processBulkUpdate(ctx context.Context, _ nibbler.Trigger, keys []K) error {
+	defer func() {
+		for _, key := range keys {
+			ch.updateInProgress.Delete(key)
+		}
+		if rec := recover(); rec != nil {
+			ch.panicCallback(rec)
+		}
+	}()
+
+	values, err := ch.bulkUpdater(ctx, keys)
+	// looking up by the requested keys ignores unrequested keys in values
+	for _, key := range keys {
+		value, found := values[key]
+		if found {
+			ch.Add(key, value)
+		}
+	}
+
+	if err != nil {
+		ch.errCallback(errors.Join(ErrBulkUpdate, err))
+	}
+	return nil
 }
 
 func (ch *Cache[K, T]) Get(key K) Value[T] {
@@ -371,10 +356,11 @@ func (ch *Cache[K, T]) Get(key K) Value[T] {
 	expireAt := cp.ExpireAt.Load()
 	delta := time.Since(*expireAt)
 	if delta >= 0 && ch.disableServeStale {
-		// cache expired and should be removed
+		// cache expired and should be removed. If the delete queue is full the removal is
+		// skipped, the key is removed on a later `Get` or by the store's eviction
 		select {
-		case <-ch.ctx.Done():
 		case ch.deleteQ <- key:
+		default:
 		}
 		return v
 	}
@@ -464,7 +450,11 @@ func New[K comparable, T any](cfg Config[K, T]) (*Cache[K, T], error) {
 		deleteQ:           deleteQ,
 	}
 
-	ch.initUpdater(&cfg)
+	err = ch.initUpdater(&cfg)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 
 	ch.workers.Go(func() { ch.deleteListener(deleteQ) })
 
